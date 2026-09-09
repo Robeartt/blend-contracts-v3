@@ -8,6 +8,10 @@ members = [
     "mocks/mock-pool-factory",
     "mocks/moderc3156",
     "pool-factory",
+    "treasury",
+    "hooks/allowlist",
+    "hooks/gated-liquidator",
+    "hooks/supplier-only",
     "test-suites"
 ]
 
@@ -26,24 +30,42 @@ codegen-units = 1
 lto = true
 
 [workspace.dependencies.soroban-sdk]
-version = "22.0.7"
+version = "=27.0.3"
 
+# Blend v2 dependencies (sep-40-oracle, sep-41-token, soroban-fixed-point-math, moderc3156)
+# come from forks under Robeartt. Each fork's `sdk-27` branch is the audited Blend v2
+# dependency commit with only the soroban-sdk bump to 27, until upstream publishes SDK 27
+# releases.
 [workspace.dependencies.soroban-fixed-point-math]
-version = "1.3.0"
+git = "https://github.com/Robeartt/soroban-fixed-point-math"
+branch = "sdk-27"
 
 [workspace.dependencies.cast]
 version = "0.3.0"
 default-features = false
 
 [workspace.dependencies.sep-40-oracle]
-version = "1.2.0"
+git = "https://github.com/Robeartt/sep-40-oracle"
+branch = "sdk-27"
 
 [workspace.dependencies.sep-41-token]
-version = "1.2.0"
-
-[workspace.dependencies.blend-contract-sdk]
-version = "1.22.0"
+git = "https://github.com/Robeartt/sep-41-token"
+branch = "sdk-27"
 
 [workspace.dependencies.moderc3156]
-git = "https://github.com/xycloo/xycloans"
-rev = "d9a7ae1"
+git = "https://github.com/Robeartt/xycloans"
+branch = "sdk-27"
+
+# OpenZeppelin stellar-contracts. Pinned to a git revision: the released 0.7.2 line is on
+# soroban-sdk 26, and main moved to 27 (the workspace baseline) without a release yet.
+[workspace.dependencies.stellar-tokens]
+git = "https://github.com/OpenZeppelin/stellar-contracts"
+rev = "6ea3075d44de51ea2a0d26fa45cbee6d385731b5"
+
+[workspace.dependencies.stellar-access]
+git = "https://github.com/OpenZeppelin/stellar-contracts"
+rev = "6ea3075d44de51ea2a0d26fa45cbee6d385731b5"
+
+[workspace.dependencies.stellar-macros]
+git = "https://github.com/OpenZeppelin/stellar-contracts"
+rev = "6ea3075d44de51ea2a0d26fa45cbee6d385731b5"

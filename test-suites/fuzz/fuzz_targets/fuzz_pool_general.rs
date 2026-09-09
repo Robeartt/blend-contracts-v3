@@ -1,18 +1,16 @@
 #![allow(unused)]
 #![no_main]
 
-use soroban_fixed_point_math::FixedPoint;
-use fuzz_common::{
-    verify_contract_result, Borrow, ClaimPool, NatI128, PassTime, Repay, Supply, Withdraw,
-};
-use pool::{PoolState, PositionData, Request};
+use fuzz_common::{verify_contract_result, Borrow, NatI128, PassTime, Repay, Supply, Withdraw};
 use libfuzzer_sys::fuzz_target;
-use soroban_sdk::testutils::arbitrary::{fuzz_catch_panic, arbitrary::{self, Arbitrary, Unstructured}};
-use soroban_sdk::{testutils::Address as _, vec, Address, token::TokenClient};
+use pool::{PoolState, PositionData, Request};
+use soroban_fixed_point_math::FixedPoint;
+use soroban_sdk::testutils::arbitrary::arbitrary::{self, Arbitrary, Unstructured};
+use soroban_sdk::{testutils::Address as _, token::TokenClient, vec, Address};
 use test_suites::{
     assertions::assert_approx_eq_abs,
     create_fixture_with_data,
-    test_fixture::{PoolFixture, TestFixture, TokenIndex, SCALAR_7, SCALAR_12},
+    test_fixture::{PoolFixture, TestFixture, TokenIndex, SCALAR_12, SCALAR_7},
 };
 
 #[derive(Arbitrary, Debug)]
@@ -36,14 +34,12 @@ enum Command {
     SamWithdraw(Withdraw),
     SamBorrow(Borrow),
     SamRepay(Repay),
-    SamClaimPool(ClaimPool),
 
     // Sam (2) Pool Commands
     MerrySupply(Supply),
     MerryWithdraw(Withdraw),
     MerryBorrow(Borrow),
     MerryRepay(Repay),
-    MerryClaimPool(ClaimPool),
 }
 
 fuzz_target!(|input: Input| {
@@ -82,12 +78,10 @@ impl Command {
             SamWithdraw(cmd) => cmd.run(fixture, 1),
             SamBorrow(cmd) => cmd.run(fixture, 1),
             SamRepay(cmd) => cmd.run(fixture, 1),
-            SamClaimPool(cmd) => cmd.run(fixture, 1),
             MerrySupply(cmd) => cmd.run(fixture, 2),
             MerryWithdraw(cmd) => cmd.run(fixture, 2),
             MerryBorrow(cmd) => cmd.run(fixture, 2),
             MerryRepay(cmd) => cmd.run(fixture, 2),
-            MerryClaimPool(cmd) => cmd.run(fixture, 2),
         }
     }
 }
@@ -108,12 +102,12 @@ impl Asserts for TestFixture<'_> {
                 let asset_to_base = pool_state.load_price(&self.env, &reserve.asset);
                 supply += asset_to_base
                     .fixed_mul_floor(
-                        reserve.total_supply() + reserve.backstop_credit,
+                        reserve.total_supply(&self.env) + reserve.data.backstop_credit,
                         reserve.scalar,
                     )
                     .unwrap();
                 liabilities += asset_to_base
-                    .fixed_mul_ceil(reserve.total_liabilities(), reserve.scalar)
+                    .fixed_mul_ceil(reserve.total_liabilities(&self.env), reserve.scalar)
                     .unwrap();
             }
         });
@@ -130,7 +124,7 @@ impl Asserts for TestFixture<'_> {
             let mut pool_state = PoolState::load(&self.env);
             let data =
                 PositionData::calculate_from_positions(&self.env, &mut pool_state, &positions);
-            assert!(data.as_health_factor() > data.scalar);
+            assert!(data.as_health_factor(&self.env) > data.scalar);
         });
     }
 }
