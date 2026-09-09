@@ -30,7 +30,7 @@ impl Reserve {
     /// * asset - The address of the underlying asset
     ///
     /// ### Panics
-    /// Panics if the asset is not supported, if emissions cannot be updated, or if the reserve
+    /// Panics if the asset is not supported, or if the reserve
     /// cannot be updated to the current ledger timestamp.
     pub fn load(e: &Env, pool_config: &PoolConfig, asset: &Address) -> Reserve {
         let reserve_config = storage::get_res_config(e, asset);
@@ -240,6 +240,7 @@ impl Reserve {
 mod tests {
     use super::*;
     use crate::testutils;
+    use crate::testutils::PROTOCOL_VERSION;
     use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
 
     #[test]
@@ -249,7 +250,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 123456 * 5,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 123456,
             network_id: Default::default(),
             base_reserve: 10,
@@ -299,7 +300,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 1000,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 123456,
             network_id: Default::default(),
             base_reserve: 10,
@@ -353,7 +354,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 123456 * 5,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 123456,
             network_id: Default::default(),
             base_reserve: 10,
@@ -402,7 +403,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 123456 * 5,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 123456,
             network_id: Default::default(),
             base_reserve: 10,
@@ -449,7 +450,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 123456 * 5,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 123456,
             network_id: Default::default(),
             base_reserve: 10,
@@ -499,7 +500,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 123456 * 5,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 123456,
             network_id: Default::default(),
             base_reserve: 10,
@@ -851,7 +852,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 123456 * 5,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 123456,
             network_id: Default::default(),
             base_reserve: 10,
@@ -876,7 +877,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 123456 * 5,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 123456,
             network_id: Default::default(),
             base_reserve: 10,

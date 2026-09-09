@@ -113,6 +113,7 @@ impl PositionData {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutils::PROTOCOL_VERSION;
     use crate::{storage::PoolConfig, testutils};
     use sep_40_oracle::testutils::Asset;
     use soroban_sdk::{
@@ -173,7 +174,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 0,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,

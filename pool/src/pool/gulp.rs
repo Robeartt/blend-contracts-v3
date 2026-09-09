@@ -42,6 +42,7 @@ mod tests {
     use crate::pool::execute_gulp;
     use crate::storage::{self, PoolConfig};
     use crate::testutils;
+    use crate::testutils::PROTOCOL_VERSION;
     use soroban_sdk::{
         testutils::{Address as _, Ledger, LedgerInfo},
         Address, Env,
@@ -53,7 +54,7 @@ mod tests {
         e.mock_all_auths();
         e.ledger().set(LedgerInfo {
             timestamp: 100,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -106,7 +107,7 @@ mod tests {
         e.mock_all_auths();
         e.ledger().set(LedgerInfo {
             timestamp: 100,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -161,7 +162,7 @@ mod tests {
         e.mock_all_auths_allowing_non_root_auth();
         e.ledger().set(LedgerInfo {
             timestamp: 100,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -210,7 +211,7 @@ mod tests {
         e.mock_all_auths_allowing_non_root_auth();
         e.ledger().set(LedgerInfo {
             timestamp: 100,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -261,7 +262,7 @@ mod tests {
         e.mock_all_auths();
         e.ledger().set(LedgerInfo {
             timestamp: 100,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,

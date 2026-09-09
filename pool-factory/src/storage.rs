@@ -20,8 +20,8 @@ pub enum PoolFactoryDataKey {
 #[contracttype]
 pub struct PoolInitMeta {
     pub pool_hash: BytesN<32>,
-    pub backstop: Address,
-    pub blnd_id: Address,
+    pub backstop_hash: BytesN<32>, // the WASM hash of the pool backstop contract
+    pub treasury: Address, // the treasury every deployed backstop pays the protocol's share of donations to
 }
 
 /// Bump the instance rent for the contract

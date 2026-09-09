@@ -445,7 +445,7 @@ mod tests {
     use crate::{
         constants::SCALAR_7,
         storage::{self, PoolConfig},
-        testutils::{self, create_comet_lp_pool, create_pool},
+        testutils::{self, create_pool, PROTOCOL_VERSION},
         AuctionData, AuctionType, Positions,
     };
 
@@ -473,7 +473,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -547,7 +547,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -623,7 +623,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -699,7 +699,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -756,7 +756,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -829,7 +829,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -904,7 +904,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -980,7 +980,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -1036,7 +1036,7 @@ mod tests {
         testutils::create_reserve(&e, &pool, &underlying, &reserve_config, &reserve_data);
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -1106,7 +1106,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -1194,7 +1194,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -1251,7 +1251,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -1329,7 +1329,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -1410,7 +1410,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -1499,7 +1499,7 @@ mod tests {
         e.mock_all_auths();
         e.ledger().set(LedgerInfo {
             timestamp: 12345,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 176 + 200,
             network_id: Default::default(),
             base_reserve: 10,
@@ -1636,7 +1636,7 @@ mod tests {
         e.mock_all_auths();
         e.ledger().set(LedgerInfo {
             timestamp: 12345,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 51 + 200,
             network_id: Default::default(),
             base_reserve: 10,
@@ -1657,13 +1657,8 @@ mod tests {
         e.cost_estimate().budget().reset_unlimited();
         let (backstop_token_id, backstop_token_client) =
             testutils::create_token_contract(&e, &bombadil);
-        let (backstop_address, backstop_client) = testutils::create_backstop(
-            &e,
-            &pool_address,
-            &backstop_token_id,
-            &Address::generate(&e),
-            &Address::generate(&e),
-        );
+        let (backstop_address, backstop_client) =
+            testutils::create_backstop(&e, &pool_address, &backstop_token_id, 100_000_0000000);
         let (underlying_0, _) = testutils::create_token_contract(&e, &bombadil);
         let (mut reserve_config_0, mut reserve_data_0) = testutils::default_reserve_meta();
         reserve_data_0.last_time = 12345;
@@ -1758,7 +1753,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 12345,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 51 + 250,
             network_id: Default::default(),
             base_reserve: 10,
@@ -1775,19 +1770,12 @@ mod tests {
         let (blnd_id, blnd_client) = testutils::create_blnd_token(&e, &pool_address, &bombadil);
 
         let (backstop_token_id, backstop_token_client) =
-            create_comet_lp_pool(&e, &bombadil, &blnd_id, &usdc_id);
+            testutils::create_token_contract(&e, &bombadil);
         let (backstop_address, backstop_client) =
-            testutils::create_backstop(&e, &pool_address, &backstop_token_id, &usdc_id, &blnd_id);
-        blnd_client.mint(&samwise, &10_000_0000000);
-        usdc_client.mint(&samwise, &250_0000000);
+            testutils::create_backstop(&e, &pool_address, &backstop_token_id, 100_000_0000000);
+        backstop_token_client.mint(&samwise, &(100 * SCALAR_7));
         let exp_ledger = e.ledger().sequence() + 100;
-        blnd_client.approve(&bombadil, &backstop_token_id, &2_000_0000000, &exp_ledger);
-        usdc_client.approve(&bombadil, &backstop_token_id, &2_000_0000000, &exp_ledger);
-        backstop_token_client.join_pool(
-            &(100 * SCALAR_7),
-            &vec![&e, 10_000_0000000, 250_0000000],
-            &samwise,
-        );
+        backstop_token_client.mint(&bombadil, &(50 * SCALAR_7));
         backstop_client.deposit(&bombadil, &pool_address, &(50 * SCALAR_7));
 
         let (underlying_0, underlying_0_client) = testutils::create_token_contract(&e, &bombadil);
@@ -1911,7 +1899,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 12345,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 51 + 200,
             network_id: Default::default(),
             base_reserve: 10,

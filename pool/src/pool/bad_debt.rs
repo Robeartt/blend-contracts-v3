@@ -79,7 +79,7 @@ pub fn check_and_handle_user_bad_debt(
 
 /// Check if the backstop's bad debt needs to be defaulted. This occurs when the backstop has less than
 /// 5% of the backstop threshold in tokens, as this implies there likely isn't enough backstop tokens
-/// to reasonalby auction off bad debt.
+/// to reasonalby auction off bad debt, or when the pool has no backstop requirement.
 ///
 /// If the backstop has less than 5% of the threshold, default the bad debt.
 ///
@@ -106,9 +106,10 @@ pub fn check_and_handle_backstop_bad_debt(
     if backstop_state.has_liabilities() {
         let backstop_client = BackstopClient::new(e, backstop_address);
         let pool_backstop_data = backstop_client.pool_data(&e.current_contract_address());
-        let threshold = calc_pool_backstop_threshold(&pool_backstop_data);
-        if threshold < 0_0000003 {
-            // ~5% of threshold
+        let min_backstop = storage::get_min_backstop(e);
+        let threshold = calc_pool_backstop_threshold(&pool_backstop_data, min_backstop);
+        if min_backstop <= 0 || threshold < 0_0500000 {
+            // no backstop requirement, or under ~5% of threshold
             let reserve_list = storage::get_res_list(e);
             for (reserve_index, liability_balance) in backstop_state.positions.liabilities.iter() {
                 let res_asset_address = reserve_list.get_unchecked(reserve_index);
@@ -131,15 +132,15 @@ mod tests {
         auctions::AuctionData,
         storage::PoolConfig,
         testutils::{
-            self, create_backstop, create_blnd_token, create_comet_lp_pool, create_pool,
-            create_token_contract,
+            self, create_backstop, create_blnd_token, create_pool, create_token_contract,
+            PROTOCOL_VERSION,
         },
         Positions,
     };
     use soroban_sdk::{
         map,
         testutils::{Address as _, Ledger, LedgerInfo},
-        vec, Address,
+        Address,
     };
 
     /***** bad_debt *****/
@@ -158,20 +159,12 @@ mod tests {
 
         let (blnd, blnd_client) = create_blnd_token(&e, &pool, &bombadil);
         let (usdc, usdc_client) = create_token_contract(&e, &bombadil);
-        let (lp_token, lp_token_client) = create_comet_lp_pool(&e, &bombadil, &blnd, &usdc);
-        let (_, backstop_client) = create_backstop(&e, &pool, &lp_token, &usdc, &blnd);
+        let (lp_token, lp_token_client) = create_token_contract(&e, &bombadil);
+        let (_, backstop_client) = create_backstop(&e, &pool, &lp_token, 25_000_0000000);
 
         // mint lp tokens and deposit them into the pool's backstop
         let backstop_tokens = 1_500_0000000; // over 5% of threshold
-        blnd_client.mint(&frodo, &500_001_0000000);
-        blnd_client.approve(&frodo, &lp_token, &i128::MAX, &99999);
-        usdc_client.mint(&frodo, &12_501_0000000);
-        usdc_client.approve(&frodo, &lp_token, &i128::MAX, &99999);
-        lp_token_client.join_pool(
-            &backstop_tokens,
-            &vec![&e, 500_001_0000000, 12_501_0000000],
-            &frodo,
-        );
+        lp_token_client.mint(&frodo, &backstop_tokens);
         backstop_client.deposit(&frodo, &pool, &backstop_tokens);
 
         let (underlying_0, _) = testutils::create_token_contract(&e, &bombadil);
@@ -184,7 +177,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 100,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -225,21 +218,13 @@ mod tests {
 
         let (blnd, blnd_client) = create_blnd_token(&e, &pool, &bombadil);
         let (usdc, usdc_client) = create_token_contract(&e, &bombadil);
-        let (lp_token, lp_token_client) = create_comet_lp_pool(&e, &bombadil, &blnd, &usdc);
+        let (lp_token, lp_token_client) = create_token_contract(&e, &bombadil);
         let (backstop_address, backstop_client) =
-            create_backstop(&e, &pool, &lp_token, &usdc, &blnd);
+            create_backstop(&e, &pool, &lp_token, 25_000_0000000);
 
         // mint lp tokens and deposit them into the pool's backstop
         let backstop_tokens = 1_500_0000000; // over 5% of threshold
-        blnd_client.mint(&frodo, &500_001_0000000);
-        blnd_client.approve(&frodo, &lp_token, &i128::MAX, &99999);
-        usdc_client.mint(&frodo, &12_501_0000000);
-        usdc_client.approve(&frodo, &lp_token, &i128::MAX, &99999);
-        lp_token_client.join_pool(
-            &backstop_tokens,
-            &vec![&e, 500_001_0000000, 12_501_0000000],
-            &frodo,
-        );
+        lp_token_client.mint(&frodo, &backstop_tokens);
         backstop_client.deposit(&frodo, &pool, &backstop_tokens);
 
         let (underlying_0, _) = testutils::create_token_contract(&e, &bombadil);
@@ -252,7 +237,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 100,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -328,21 +313,13 @@ mod tests {
 
         let (blnd, blnd_client) = create_blnd_token(&e, &pool, &bombadil);
         let (usdc, usdc_client) = create_token_contract(&e, &bombadil);
-        let (lp_token, lp_token_client) = create_comet_lp_pool(&e, &bombadil, &blnd, &usdc);
+        let (lp_token, lp_token_client) = create_token_contract(&e, &bombadil);
         let (backstop_address, backstop_client) =
-            create_backstop(&e, &pool, &lp_token, &usdc, &blnd);
+            create_backstop(&e, &pool, &lp_token, 25_000_0000000);
 
         // mint lp tokens and deposit them into the pool's backstop
         let backstop_tokens = 1_500_0000000; // over 5% of threshold
-        blnd_client.mint(&frodo, &500_001_0000000);
-        blnd_client.approve(&frodo, &lp_token, &i128::MAX, &99999);
-        usdc_client.mint(&frodo, &12_501_0000000);
-        usdc_client.approve(&frodo, &lp_token, &i128::MAX, &99999);
-        lp_token_client.join_pool(
-            &backstop_tokens,
-            &vec![&e, 500_001_0000000, 12_501_0000000],
-            &frodo,
-        );
+        lp_token_client.mint(&frodo, &backstop_tokens);
         backstop_client.deposit(&frodo, &pool, &backstop_tokens);
 
         let (underlying_0, _) = testutils::create_token_contract(&e, &bombadil);
@@ -355,7 +332,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 100,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -413,21 +390,13 @@ mod tests {
 
         let (blnd, blnd_client) = create_blnd_token(&e, &pool, &bombadil);
         let (usdc, usdc_client) = create_token_contract(&e, &bombadil);
-        let (lp_token, lp_token_client) = create_comet_lp_pool(&e, &bombadil, &blnd, &usdc);
+        let (lp_token, lp_token_client) = create_token_contract(&e, &bombadil);
         let (backstop_address, backstop_client) =
-            create_backstop(&e, &pool, &lp_token, &usdc, &blnd);
+            create_backstop(&e, &pool, &lp_token, 25_000_0000000);
 
         // mint lp tokens and deposit them into the pool's backstop
         let backstop_tokens = 1_500_0000000; // over 5% of threshold
-        blnd_client.mint(&frodo, &500_001_0000000);
-        blnd_client.approve(&frodo, &lp_token, &i128::MAX, &99999);
-        usdc_client.mint(&frodo, &12_501_0000000);
-        usdc_client.approve(&frodo, &lp_token, &i128::MAX, &99999);
-        lp_token_client.join_pool(
-            &backstop_tokens,
-            &vec![&e, 500_001_0000000, 12_501_0000000],
-            &frodo,
-        );
+        lp_token_client.mint(&frodo, &backstop_tokens);
         backstop_client.deposit(&frodo, &pool, &backstop_tokens);
 
         let (underlying_0, _) = testutils::create_token_contract(&e, &bombadil);
@@ -440,7 +409,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 100,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -480,21 +449,13 @@ mod tests {
 
         let (blnd, blnd_client) = create_blnd_token(&e, &pool, &bombadil);
         let (usdc, usdc_client) = create_token_contract(&e, &bombadil);
-        let (lp_token, lp_token_client) = create_comet_lp_pool(&e, &bombadil, &blnd, &usdc);
+        let (lp_token, lp_token_client) = create_token_contract(&e, &bombadil);
         let (backstop_address, backstop_client) =
-            create_backstop(&e, &pool, &lp_token, &usdc, &blnd);
+            create_backstop(&e, &pool, &lp_token, 25_000_0000000);
 
         // mint lp tokens and deposit them into the pool's backstop
         let backstop_tokens = 1_000_0000000; // under 5% of threshold
-        blnd_client.mint(&frodo, &500_001_0000000);
-        blnd_client.approve(&frodo, &lp_token, &i128::MAX, &99999);
-        usdc_client.mint(&frodo, &12_501_0000000);
-        usdc_client.approve(&frodo, &lp_token, &i128::MAX, &99999);
-        lp_token_client.join_pool(
-            &backstop_tokens,
-            &vec![&e, 500_001_0000000, 12_501_0000000],
-            &frodo,
-        );
+        lp_token_client.mint(&frodo, &backstop_tokens);
         backstop_client.deposit(&frodo, &pool, &backstop_tokens);
 
         let (underlying_0, _) = testutils::create_token_contract(&e, &bombadil);
@@ -507,7 +468,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 100,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -571,21 +532,13 @@ mod tests {
 
         let (blnd, blnd_client) = create_blnd_token(&e, &pool, &bombadil);
         let (usdc, usdc_client) = create_token_contract(&e, &bombadil);
-        let (lp_token, lp_token_client) = create_comet_lp_pool(&e, &bombadil, &blnd, &usdc);
+        let (lp_token, lp_token_client) = create_token_contract(&e, &bombadil);
         let (backstop_address, backstop_client) =
-            create_backstop(&e, &pool, &lp_token, &usdc, &blnd);
+            create_backstop(&e, &pool, &lp_token, 25_000_0000000);
 
         // mint lp tokens and deposit them into the pool's backstop
         let backstop_tokens = 1_000_0000000; // under 5% of threshold
-        blnd_client.mint(&frodo, &500_001_0000000);
-        blnd_client.approve(&frodo, &lp_token, &i128::MAX, &99999);
-        usdc_client.mint(&frodo, &12_501_0000000);
-        usdc_client.approve(&frodo, &lp_token, &i128::MAX, &99999);
-        lp_token_client.join_pool(
-            &backstop_tokens,
-            &vec![&e, 500_001_0000000, 12_501_0000000],
-            &frodo,
-        );
+        lp_token_client.mint(&frodo, &backstop_tokens);
         backstop_client.deposit(&frodo, &pool, &backstop_tokens);
 
         let (underlying_0, _) = testutils::create_token_contract(&e, &bombadil);
@@ -598,7 +551,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 100,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -652,20 +605,12 @@ mod tests {
 
         let (blnd, blnd_client) = create_blnd_token(&e, &pool, &bombadil);
         let (usdc, usdc_client) = create_token_contract(&e, &bombadil);
-        let (lp_token, lp_token_client) = create_comet_lp_pool(&e, &bombadil, &blnd, &usdc);
-        let (_, backstop_client) = create_backstop(&e, &pool, &lp_token, &usdc, &blnd);
+        let (lp_token, lp_token_client) = create_token_contract(&e, &bombadil);
+        let (_, backstop_client) = create_backstop(&e, &pool, &lp_token, 25_000_0000000);
 
         // mint lp tokens and deposit them into the pool's backstop
         let backstop_tokens = 1_500_0000000; // over 5% of threshold
-        blnd_client.mint(&frodo, &500_001_0000000);
-        blnd_client.approve(&frodo, &lp_token, &i128::MAX, &99999);
-        usdc_client.mint(&frodo, &12_501_0000000);
-        usdc_client.approve(&frodo, &lp_token, &i128::MAX, &99999);
-        lp_token_client.join_pool(
-            &backstop_tokens,
-            &vec![&e, 500_001_0000000, 12_501_0000000],
-            &frodo,
-        );
+        lp_token_client.mint(&frodo, &backstop_tokens);
         backstop_client.deposit(&frodo, &pool, &backstop_tokens);
 
         let (underlying_0, _) = testutils::create_token_contract(&e, &bombadil);
@@ -678,7 +623,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 100,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -731,21 +676,13 @@ mod tests {
 
         let (blnd, blnd_client) = create_blnd_token(&e, &pool, &bombadil);
         let (usdc, usdc_client) = create_token_contract(&e, &bombadil);
-        let (lp_token, lp_token_client) = create_comet_lp_pool(&e, &bombadil, &blnd, &usdc);
+        let (lp_token, lp_token_client) = create_token_contract(&e, &bombadil);
         let (backstop_address, backstop_client) =
-            create_backstop(&e, &pool, &lp_token, &usdc, &blnd);
+            create_backstop(&e, &pool, &lp_token, 25_000_0000000);
 
         // mint lp tokens and deposit them into the pool's backstop
         let backstop_tokens = 1_500_0000000; // over 5% of threshold
-        blnd_client.mint(&frodo, &500_001_0000000);
-        blnd_client.approve(&frodo, &lp_token, &i128::MAX, &99999);
-        usdc_client.mint(&frodo, &12_501_0000000);
-        usdc_client.approve(&frodo, &lp_token, &i128::MAX, &99999);
-        lp_token_client.join_pool(
-            &backstop_tokens,
-            &vec![&e, 500_001_0000000, 12_501_0000000],
-            &frodo,
-        );
+        lp_token_client.mint(&frodo, &backstop_tokens);
         backstop_client.deposit(&frodo, &pool, &backstop_tokens);
 
         let (underlying_0, _) = testutils::create_token_contract(&e, &bombadil);
@@ -758,7 +695,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 100,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -838,21 +775,13 @@ mod tests {
 
         let (blnd, blnd_client) = create_blnd_token(&e, &pool, &bombadil);
         let (usdc, usdc_client) = create_token_contract(&e, &bombadil);
-        let (lp_token, lp_token_client) = create_comet_lp_pool(&e, &bombadil, &blnd, &usdc);
+        let (lp_token, lp_token_client) = create_token_contract(&e, &bombadil);
         let (backstop_address, backstop_client) =
-            create_backstop(&e, &pool, &lp_token, &usdc, &blnd);
+            create_backstop(&e, &pool, &lp_token, 25_000_0000000);
 
         // mint lp tokens and deposit them into the pool's backstop
         let backstop_tokens = 1_500_0000000; // over 5% of threshold
-        blnd_client.mint(&frodo, &500_001_0000000);
-        blnd_client.approve(&frodo, &lp_token, &i128::MAX, &99999);
-        usdc_client.mint(&frodo, &12_501_0000000);
-        usdc_client.approve(&frodo, &lp_token, &i128::MAX, &99999);
-        lp_token_client.join_pool(
-            &backstop_tokens,
-            &vec![&e, 500_001_0000000, 12_501_0000000],
-            &frodo,
-        );
+        lp_token_client.mint(&frodo, &backstop_tokens);
         backstop_client.deposit(&frodo, &pool, &backstop_tokens);
 
         let (underlying_0, _) = testutils::create_token_contract(&e, &bombadil);
@@ -865,7 +794,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 100,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -928,21 +857,13 @@ mod tests {
 
         let (blnd, blnd_client) = create_blnd_token(&e, &pool, &bombadil);
         let (usdc, usdc_client) = create_token_contract(&e, &bombadil);
-        let (lp_token, lp_token_client) = create_comet_lp_pool(&e, &bombadil, &blnd, &usdc);
+        let (lp_token, lp_token_client) = create_token_contract(&e, &bombadil);
         let (backstop_address, backstop_client) =
-            create_backstop(&e, &pool, &lp_token, &usdc, &blnd);
+            create_backstop(&e, &pool, &lp_token, 25_000_0000000);
 
         // mint lp tokens and deposit them into the pool's backstop
         let backstop_tokens = 1_000_0000000; // under 5% of threshold
-        blnd_client.mint(&frodo, &500_001_0000000);
-        blnd_client.approve(&frodo, &lp_token, &i128::MAX, &99999);
-        usdc_client.mint(&frodo, &12_501_0000000);
-        usdc_client.approve(&frodo, &lp_token, &i128::MAX, &99999);
-        lp_token_client.join_pool(
-            &backstop_tokens,
-            &vec![&e, 500_001_0000000, 12_501_0000000],
-            &frodo,
-        );
+        lp_token_client.mint(&frodo, &backstop_tokens);
         backstop_client.deposit(&frodo, &pool, &backstop_tokens);
 
         let (underlying_0, _) = testutils::create_token_contract(&e, &bombadil);
@@ -955,7 +876,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 100,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -1018,21 +939,13 @@ mod tests {
 
         let (blnd, blnd_client) = create_blnd_token(&e, &pool, &bombadil);
         let (usdc, usdc_client) = create_token_contract(&e, &bombadil);
-        let (lp_token, lp_token_client) = create_comet_lp_pool(&e, &bombadil, &blnd, &usdc);
+        let (lp_token, lp_token_client) = create_token_contract(&e, &bombadil);
         let (backstop_address, backstop_client) =
-            create_backstop(&e, &pool, &lp_token, &usdc, &blnd);
+            create_backstop(&e, &pool, &lp_token, 25_000_0000000);
 
         // mint lp tokens and deposit them into the pool's backstop
         let backstop_tokens = 1_000_0000000; // under 5% of threshold
-        blnd_client.mint(&frodo, &500_001_0000000);
-        blnd_client.approve(&frodo, &lp_token, &i128::MAX, &99999);
-        usdc_client.mint(&frodo, &12_501_0000000);
-        usdc_client.approve(&frodo, &lp_token, &i128::MAX, &99999);
-        lp_token_client.join_pool(
-            &backstop_tokens,
-            &vec![&e, 500_001_0000000, 12_501_0000000],
-            &frodo,
-        );
+        lp_token_client.mint(&frodo, &backstop_tokens);
         backstop_client.deposit(&frodo, &pool, &backstop_tokens);
 
         let (underlying_0, _) = testutils::create_token_contract(&e, &bombadil);
@@ -1045,7 +958,97 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 100,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
+            sequence_number: 1234,
+            network_id: Default::default(),
+            base_reserve: 10,
+            min_temp_entry_ttl: 10,
+            min_persistent_entry_ttl: 10,
+            max_entry_ttl: 3110400,
+        });
+        let pool_config = PoolConfig {
+            oracle: Address::generate(&e),
+            min_collateral: 1_0000000,
+            bstop_rate: 0_1000000,
+            status: 1,
+            max_positions: 5,
+        };
+        let backstop_positions = Positions {
+            liabilities: map![&e, (0, 1_5000000), (1, 3_5000000)],
+            collateral: map![&e],
+            supply: map![&e],
+        };
+        e.as_contract(&pool, || {
+            storage::set_pool_config(&e, &pool_config);
+            storage::set_user_positions(&e, &backstop_address, &backstop_positions);
+
+            let mut pool = Pool::load(&e);
+            let mut backstop_user = User::load(&e, &backstop_address);
+
+            let result = check_and_handle_backstop_bad_debt(
+                &e,
+                &mut pool,
+                &backstop_address,
+                &mut backstop_user,
+            );
+            assert_eq!(result, true);
+
+            // assert backstop user updated
+            assert_eq!(backstop_user.positions.liabilities.len(), 0);
+            assert_eq!(
+                backstop_user.positions.collateral,
+                backstop_positions.collateral
+            );
+            assert_eq!(backstop_user.positions.supply, backstop_positions.supply);
+
+            // store pool reserves and assert they got updated
+            pool.store_cached_reserves(&e);
+            let post_reserve_data_0 = storage::get_res_data(&e, &underlying_0);
+            assert_eq!(post_reserve_data_0.last_time, 100);
+            assert!(post_reserve_data_0.d_supply < reserve_data_0.d_supply);
+            assert!(post_reserve_data_0.d_rate > reserve_data_0.d_rate);
+            assert_eq!(post_reserve_data_0.b_supply, reserve_data_0.b_supply);
+            assert!(post_reserve_data_0.b_rate < reserve_data_0.b_rate);
+            let post_reserve_data_1 = storage::get_res_data(&e, &underlying_1);
+            assert_eq!(post_reserve_data_1.last_time, 100);
+            assert!(post_reserve_data_1.d_supply < reserve_data_1.d_supply);
+            assert!(post_reserve_data_1.d_rate > reserve_data_1.d_rate);
+            assert_eq!(post_reserve_data_1.b_supply, reserve_data_1.b_supply);
+            assert!(post_reserve_data_1.b_rate < reserve_data_1.b_rate);
+        });
+    }
+
+    #[test]
+    fn test_check_and_handle_backstop_bad_debt_no_backstop_requirement_defaults() {
+        let e = Env::default();
+        e.cost_estimate().budget().reset_unlimited();
+        e.mock_all_auths();
+
+        let pool = create_pool(&e);
+        let bombadil = Address::generate(&e);
+        let frodo = Address::generate(&e);
+
+        let (blnd, blnd_client) = create_blnd_token(&e, &pool, &bombadil);
+        let (usdc, usdc_client) = create_token_contract(&e, &bombadil);
+        let (lp_token, lp_token_client) = create_token_contract(&e, &bombadil);
+        let (backstop_address, backstop_client) = create_backstop(&e, &pool, &lp_token, 0);
+
+        // a well funded backstop still defaults when the pool has no backstop requirement
+        let backstop_tokens = 100_000_0000000;
+        lp_token_client.mint(&frodo, &backstop_tokens);
+        backstop_client.deposit(&frodo, &pool, &backstop_tokens);
+
+        let (underlying_0, _) = testutils::create_token_contract(&e, &bombadil);
+        let (reserve_config, reserve_data_0) = testutils::default_reserve_meta();
+        testutils::create_reserve(&e, &pool, &underlying_0, &reserve_config, &reserve_data_0);
+
+        let (underlying_1, _) = testutils::create_token_contract(&e, &bombadil);
+        let (reserve_config, reserve_data_1) = testutils::default_reserve_meta();
+        testutils::create_reserve(&e, &pool, &underlying_1, &reserve_config, &reserve_data_1);
+
+        e.ledger().set(LedgerInfo {
+            timestamp: 100,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,

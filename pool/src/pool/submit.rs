@@ -2,7 +2,7 @@ use moderc3156::FlashLoanClient;
 use sep_41_token::TokenClient;
 use soroban_sdk::{panic_with_error, Address, Env, Map, Vec};
 
-use crate::{events::PoolEvents, storage, AuctionType, PoolError};
+use crate::{dependencies::PoolHookClient, events::PoolEvents, storage, AuctionType, PoolError};
 
 use super::{
     actions::{build_actions_from_request, Actions, Request},
@@ -41,6 +41,8 @@ pub fn execute_submit(
 
     let prev_positions_count = from_state.positions.effective_count();
 
+    let hooked = has_entry(&requests);
+    let submitted = requests.clone();
     let actions = build_actions_from_request(e, &mut pool, &mut from_state, requests);
 
     validate_submit(
@@ -56,6 +58,18 @@ pub fn execute_submit(
         handle_transfer_with_allowance(e, &actions, spender, to);
     } else {
         handle_transfers(e, &actions, spender, to);
+    }
+
+    if hooked {
+        call_hook(
+            e,
+            from,
+            spender,
+            to,
+            submitted,
+            &pool,
+            &from_state.positions,
+        );
     }
 
     // store updated info to ledger
@@ -103,6 +117,7 @@ pub fn execute_submit_with_flash_loan(
         );
     }
 
+    let submitted = requests.clone();
     let mut actions = build_actions_from_request(e, &mut pool, &mut from_state, requests);
 
     // require flash loaned asset is added to check_max_util
@@ -142,11 +157,49 @@ pub fn execute_submit_with_flash_loan(
 
     handle_transfer_with_allowance(e, &actions, from, from);
 
+    // a flash loan is a borrow, so the batch is always hooked
+    call_hook(e, from, from, from, submitted, &pool, &from_state.positions);
+
     // store updated info to ledger
     pool.store_cached_reserves(e);
     from_state.store(e);
 
     from_state.positions
+}
+
+/// Whether a batch contains an entry into the pool: a supply, a borrow or an auction fill.
+/// Batches of exits only are never hooked, so a hook can never trap a user.
+fn has_entry(requests: &Vec<Request>) -> bool {
+    for request in requests.iter() {
+        match request.request_type {
+            0 | 2 | 4 | 6 | 7 | 8 => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Call the pool's hook with the applied batch, if the pool has one. A panic in the hook reverts
+/// the batch.
+fn call_hook(
+    e: &Env,
+    from: &Address,
+    spender: &Address,
+    to: &Address,
+    requests: Vec<Request>,
+    pool: &Pool,
+    positions: &Positions,
+) {
+    if let Some(hook) = storage::get_hook(e) {
+        PoolHookClient::new(e, &hook).on_submit(
+            from,
+            spender,
+            to,
+            &requests,
+            &pool.touched_reserves(e),
+            positions,
+        );
+    }
 }
 
 /// Validate submit results in a valid state for the pool and user.
@@ -246,13 +299,16 @@ fn handle_transfers(e: &Env, actions: &Actions, spender: &Address, to: &Address)
 
 #[cfg(test)]
 mod tests {
+    use crate::testutils::PROTOCOL_VERSION;
     use crate::{
+        constants::SCALAR_7,
         storage::{self, PoolConfig},
         testutils, AuctionData, RequestType,
     };
 
     use super::*;
     use sep_40_oracle::testutils::Asset;
+    use sep_41_token::testutils::MockTokenClient;
     use soroban_sdk::{
         map,
         testutils::{Address as _, Ledger, LedgerInfo},
@@ -267,7 +323,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -380,7 +436,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -540,7 +596,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -657,7 +713,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -732,7 +788,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -850,7 +906,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -894,7 +950,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -955,7 +1011,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -1016,7 +1072,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -1077,7 +1133,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -1157,7 +1213,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -1259,7 +1315,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -1345,7 +1401,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -1460,7 +1516,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -1535,7 +1591,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -1659,7 +1715,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -1751,7 +1807,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -1877,7 +1933,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -1984,7 +2040,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -2066,7 +2122,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -2148,7 +2204,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -2232,7 +2288,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -2338,7 +2394,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -2432,7 +2488,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -2516,7 +2572,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -2598,7 +2654,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 600,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -2670,5 +2726,553 @@ mod tests {
             ];
             execute_submit_with_flash_loan(&e, &samwise, flash_loan, requests);
         });
+    }
+
+    /// A pool with a funded USDC backstop, an open interest auction over two reserves and a filler
+    /// holding USDC. Returns (pool, usdc, backstop, samwise, underlying_0, underlying_1).
+    fn interest_auction_fixture(
+        e: &Env,
+        min_backstop: i128,
+    ) -> (Address, Address, Address, Address, Address, Address) {
+        e.ledger().set(LedgerInfo {
+            timestamp: 12345,
+            protocol_version: PROTOCOL_VERSION,
+            sequence_number: 51 + 250,
+            network_id: Default::default(),
+            base_reserve: 10,
+            min_temp_entry_ttl: 10,
+            min_persistent_entry_ttl: 10,
+            max_entry_ttl: 3110400,
+        });
+
+        let bombadil = Address::generate(e);
+        let samwise = Address::generate(e);
+
+        let pool_address = testutils::create_pool(e);
+        let (usdc_id, usdc_client) = testutils::create_token_contract(e, &bombadil);
+        let (backstop_address, backstop_client) =
+            testutils::create_backstop(e, &pool_address, &usdc_id, min_backstop);
+        usdc_client.mint(&samwise, &(10_000 * SCALAR_7));
+        usdc_client.mint(&bombadil, &(50 * SCALAR_7));
+        backstop_client.deposit(&bombadil, &pool_address, &(50 * SCALAR_7));
+
+        let (underlying_0, _) = testutils::create_token_contract(e, &bombadil);
+        let (mut reserve_config_0, mut reserve_data_0) = testutils::default_reserve_meta();
+        reserve_data_0.last_time = 12345;
+        reserve_data_0.backstop_credit = 100_0000000;
+        reserve_config_0.index = 0;
+        testutils::create_reserve(
+            e,
+            &pool_address,
+            &underlying_0,
+            &reserve_config_0,
+            &reserve_data_0,
+        );
+
+        let (underlying_1, _) = testutils::create_token_contract(e, &bombadil);
+        let (mut reserve_config_1, mut reserve_data_1) = testutils::default_reserve_meta();
+        reserve_data_1.last_time = 12345;
+        reserve_data_1.backstop_credit = 25_0000000;
+        reserve_config_1.index = 1;
+        testutils::create_reserve(
+            e,
+            &pool_address,
+            &underlying_1,
+            &reserve_config_1,
+            &reserve_data_1,
+        );
+
+        let pool_config = PoolConfig {
+            oracle: Address::generate(e),
+            min_collateral: 1_0000000,
+            bstop_rate: 0_1000000,
+            status: 0,
+            max_positions: 4,
+        };
+        // 250 blocks in: the bid has scaled down to 75%
+        let auction_data = AuctionData {
+            bid: map![e, (usdc_id.clone(), 100_0000000)],
+            lot: map![
+                e,
+                (underlying_0.clone(), 100_0000000),
+                (underlying_1.clone(), 25_0000000)
+            ],
+            block: 51,
+        };
+        e.as_contract(&pool_address, || {
+            storage::set_pool_config(e, &pool_config);
+            storage::set_auction(
+                e,
+                &(AuctionType::InterestAuction as u32),
+                &backstop_address,
+                &auction_data,
+            );
+        });
+        (
+            pool_address,
+            usdc_id,
+            backstop_address,
+            samwise,
+            underlying_0,
+            underlying_1,
+        )
+    }
+
+    #[test]
+    fn test_submit_fill_interest_auction() {
+        let e = Env::default();
+        e.cost_estimate().budget().reset_unlimited();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let (pool_address, usdc_id, backstop_address, samwise, underlying_0, underlying_1) =
+            interest_auction_fixture(&e, 100_000 * SCALAR_7);
+        let usdc_client = MockTokenClient::new(&e, &usdc_id);
+
+        let requests = vec![
+            &e,
+            Request {
+                request_type: RequestType::FillInterestAuction as u32,
+                address: backstop_address.clone(),
+                amount: 100,
+            },
+        ];
+        e.as_contract(&pool_address, || {
+            execute_submit(&e, &samwise, &samwise, &samwise, requests, false);
+        });
+
+        // the 75 USDC bid goes from the filler straight to the backstop, never through the pool
+        assert_eq!(
+            usdc_client.balance(&samwise),
+            10_000 * SCALAR_7 - 75_0000000
+        );
+        assert_eq!(
+            usdc_client.balance(&backstop_address),
+            50 * SCALAR_7 + 75_0000000
+        );
+        assert_eq!(usdc_client.balance(&pool_address), 0);
+        assert_eq!(
+            MockTokenClient::new(&e, &underlying_0).balance(&samwise),
+            100_0000000
+        );
+        assert_eq!(
+            MockTokenClient::new(&e, &underlying_1).balance(&samwise),
+            25_0000000
+        );
+        e.as_contract(&pool_address, || {
+            assert!(!storage::has_auction(
+                &e,
+                &(AuctionType::InterestAuction as u32),
+                &backstop_address
+            ));
+            assert_eq!(storage::get_res_data(&e, &underlying_0).backstop_credit, 0);
+            assert_eq!(storage::get_res_data(&e, &underlying_1).backstop_credit, 0);
+        });
+    }
+
+    #[test]
+    fn test_submit_fill_interest_auction_min_backstop_zero() {
+        let e = Env::default();
+        e.cost_estimate().budget().reset_unlimited();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        // min_backstop 0 is not a special case for interest auctions
+        let (pool_address, usdc_id, backstop_address, samwise, _, _) =
+            interest_auction_fixture(&e, 0);
+        let usdc_client = MockTokenClient::new(&e, &usdc_id);
+
+        let requests = vec![
+            &e,
+            Request {
+                request_type: RequestType::FillInterestAuction as u32,
+                address: backstop_address.clone(),
+                amount: 100,
+            },
+        ];
+        e.as_contract(&pool_address, || {
+            execute_submit(&e, &samwise, &samwise, &samwise, requests, true);
+        });
+
+        assert_eq!(
+            usdc_client.balance(&samwise),
+            10_000 * SCALAR_7 - 75_0000000
+        );
+        assert_eq!(
+            usdc_client.balance(&backstop_address),
+            50 * SCALAR_7 + 75_0000000
+        );
+        assert_eq!(usdc_client.balance(&pool_address), 0);
+    }
+
+    /// A pool with two priced reserves, samwise holding 16 of reserve 0, and a mock hook.
+    /// Returns (pool, hook, samwise, underlying_0, underlying_1).
+    fn hook_fixture(e: &Env, with_hook: bool) -> (Address, Address, Address, Address, Address) {
+        e.ledger().set(LedgerInfo {
+            timestamp: 600,
+            protocol_version: PROTOCOL_VERSION,
+            sequence_number: 1234,
+            network_id: Default::default(),
+            base_reserve: 10,
+            min_temp_entry_ttl: 10,
+            min_persistent_entry_ttl: 10,
+            max_entry_ttl: 3110400,
+        });
+
+        let bombadil = Address::generate(e);
+        let samwise = Address::generate(e);
+        let pool = testutils::create_pool(e);
+        let (oracle, oracle_client) = testutils::create_mock_oracle(e);
+
+        let (underlying_0, underlying_0_client) = testutils::create_token_contract(e, &bombadil);
+        let (reserve_config, reserve_data) = testutils::default_reserve_meta();
+        testutils::create_reserve(e, &pool, &underlying_0, &reserve_config, &reserve_data);
+
+        let (underlying_1, _) = testutils::create_token_contract(e, &bombadil);
+        let (reserve_config, reserve_data) = testutils::default_reserve_meta();
+        testutils::create_reserve(e, &pool, &underlying_1, &reserve_config, &reserve_data);
+
+        underlying_0_client.mint(&samwise, &16_0000000);
+
+        oracle_client.set_data(
+            &bombadil,
+            &Asset::Other(Symbol::new(e, "USD")),
+            &vec![
+                e,
+                Asset::Stellar(underlying_0.clone()),
+                Asset::Stellar(underlying_1.clone()),
+            ],
+            &7,
+            &300,
+        );
+        oracle_client.set_price_stable(&vec![e, 1_0000000, 5_0000000]);
+
+        let pool_config = PoolConfig {
+            oracle,
+            min_collateral: 1_0000000,
+            bstop_rate: 0_1000000,
+            status: 0,
+            max_positions: 4,
+        };
+        e.as_contract(&pool, || {
+            storage::set_pool_config(e, &pool_config);
+        });
+        let hook = if with_hook {
+            testutils::create_mock_hook(e, &pool).0
+        } else {
+            Address::generate(e)
+        };
+        (pool, hook, samwise, underlying_0, underlying_1)
+    }
+
+    #[test]
+    fn test_submit_calls_hook_with_applied_batch() {
+        let e = Env::default();
+        e.cost_estimate().budget().reset_unlimited();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let (pool, hook, samwise, underlying_0, underlying_1) = hook_fixture(&e, true);
+        let hook_client = testutils::MockPoolHookClient::new(&e, &hook);
+        let merry = Address::generate(&e);
+
+        let requests = vec![
+            &e,
+            Request {
+                request_type: RequestType::SupplyCollateral as u32,
+                address: underlying_0.clone(),
+                amount: 15_0000000,
+            },
+            Request {
+                request_type: RequestType::Borrow as u32,
+                address: underlying_1.clone(),
+                amount: 1_5000000,
+            },
+        ];
+        let positions = e.as_contract(&pool, || {
+            execute_submit(&e, &samwise, &samwise, &merry, requests.clone(), false)
+        });
+
+        assert_eq!(hook_client.calls(), 1);
+        let call = hook_client.last_submit().unwrap();
+        assert_eq!(call.from, samwise);
+        assert_eq!(call.spender, samwise);
+        assert_eq!(call.to, merry);
+        assert_eq!(call.requests.len(), 2);
+        assert_eq!(call.requests.get_unchecked(0).address, underlying_0);
+        assert_eq!(call.requests.get_unchecked(1).amount, 1_5000000);
+        // the touched reserves, post-action
+        assert_eq!(call.reserves.len(), 2);
+        let reserve_0 = call.reserves.get_unchecked(0);
+        assert_eq!(reserve_0.asset, underlying_0);
+        assert_eq!(reserve_0.config.index, 0);
+        assert_eq!(
+            reserve_0.data.b_supply,
+            100_0000000 + positions.collateral.get_unchecked(0)
+        );
+        let reserve_1 = call.reserves.get_unchecked(1);
+        assert_eq!(reserve_1.asset, underlying_1);
+        assert_eq!(
+            reserve_1.data.d_supply,
+            75_0000000 + positions.liabilities.get_unchecked(1)
+        );
+        // the final positions
+        assert_eq!(
+            call.positions.collateral.get_unchecked(0),
+            positions.collateral.get_unchecked(0)
+        );
+        assert_eq!(
+            call.positions.liabilities.get_unchecked(1),
+            positions.liabilities.get_unchecked(1)
+        );
+        assert_eq!(call.positions.supply.len(), 0);
+    }
+
+    #[test]
+    fn test_submit_exit_only_batch_skips_hook() {
+        let e = Env::default();
+        e.cost_estimate().budget().reset_unlimited();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let (pool, hook, samwise, underlying_0, underlying_1) = hook_fixture(&e, true);
+        let hook_client = testutils::MockPoolHookClient::new(&e, &hook);
+
+        // enter first, hooked once
+        let requests = vec![
+            &e,
+            Request {
+                request_type: RequestType::SupplyCollateral as u32,
+                address: underlying_0.clone(),
+                amount: 15_0000000,
+            },
+            Request {
+                request_type: RequestType::Borrow as u32,
+                address: underlying_1.clone(),
+                amount: 1_5000000,
+            },
+        ];
+        e.as_contract(&pool, || {
+            execute_submit(&e, &samwise, &samwise, &samwise, requests, false);
+        });
+        assert_eq!(hook_client.calls(), 1);
+
+        // a hook that now rejects everything cannot block the exit
+        hook_client.set_rejecting(&true);
+        MockTokenClient::new(&e, &underlying_1).mint(&samwise, &1_0000000);
+        let requests = vec![
+            &e,
+            Request {
+                request_type: RequestType::Repay as u32,
+                address: underlying_1.clone(),
+                amount: 2_0000000,
+            },
+            Request {
+                request_type: RequestType::WithdrawCollateral as u32,
+                address: underlying_0.clone(),
+                amount: 15_0000000,
+            },
+        ];
+        let positions = e.as_contract(&pool, || {
+            execute_submit(&e, &samwise, &samwise, &samwise, requests, false)
+        });
+        assert_eq!(hook_client.calls(), 1);
+        assert_eq!(positions.effective_count(), 0);
+    }
+
+    #[test]
+    fn test_submit_mixed_batch_calls_hook_with_exits_included() {
+        let e = Env::default();
+        e.cost_estimate().budget().reset_unlimited();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let (pool, hook, samwise, underlying_0, _) = hook_fixture(&e, true);
+        let hook_client = testutils::MockPoolHookClient::new(&e, &hook);
+
+        let requests = vec![
+            &e,
+            Request {
+                request_type: RequestType::Supply as u32,
+                address: underlying_0.clone(),
+                amount: 10_0000000,
+            },
+            Request {
+                request_type: RequestType::Withdraw as u32,
+                address: underlying_0.clone(),
+                amount: 4_0000000,
+            },
+        ];
+        e.as_contract(&pool, || {
+            execute_submit(&e, &samwise, &samwise, &samwise, requests, false);
+        });
+
+        assert_eq!(hook_client.calls(), 1);
+        let call = hook_client.last_submit().unwrap();
+        assert_eq!(call.requests.len(), 2);
+        assert_eq!(
+            call.requests.get_unchecked(1).request_type,
+            RequestType::Withdraw as u32
+        );
+        assert_eq!(call.reserves.len(), 1);
+        assert_eq!(
+            call.positions.supply.get_unchecked(0),
+            call.reserves.get_unchecked(0).data.b_supply - 100_0000000
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #1200)")]
+    fn test_submit_hook_rejects_batch() {
+        let e = Env::default();
+        e.cost_estimate().budget().reset_unlimited();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let (pool, hook, samwise, underlying_0, _) = hook_fixture(&e, true);
+        testutils::MockPoolHookClient::new(&e, &hook).set_rejecting(&true);
+
+        let requests = vec![
+            &e,
+            Request {
+                request_type: RequestType::Supply as u32,
+                address: underlying_0.clone(),
+                amount: 10_0000000,
+            },
+        ];
+        e.as_contract(&pool, || {
+            execute_submit(&e, &samwise, &samwise, &samwise, requests, false);
+        });
+    }
+
+    #[test]
+    fn test_submit_hook_rejection_reverts_batch() {
+        let e = Env::default();
+        e.cost_estimate().budget().reset_unlimited();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let (pool, hook, samwise, underlying_0, _) = hook_fixture(&e, true);
+        testutils::MockPoolHookClient::new(&e, &hook).set_rejecting(&true);
+        let underlying_0_client = MockTokenClient::new(&e, &underlying_0);
+        let pre_pool_balance = underlying_0_client.balance(&pool);
+
+        let requests = vec![
+            &e,
+            Request {
+                request_type: RequestType::Supply as u32,
+                address: underlying_0.clone(),
+                amount: 10_0000000,
+            },
+        ];
+        let result = e.as_contract(&pool, || {
+            crate::PoolContractClient::new(&e, &pool)
+                .try_submit(&samwise, &samwise, &samwise, &requests)
+        });
+        assert!(result.is_err());
+        assert_eq!(underlying_0_client.balance(&pool), pre_pool_balance);
+        assert_eq!(underlying_0_client.balance(&samwise), 16_0000000);
+        e.as_contract(&pool, || {
+            assert_eq!(storage::get_user_positions(&e, &samwise).supply.len(), 0);
+            assert_eq!(
+                storage::get_res_data(&e, &underlying_0).b_supply,
+                100_0000000
+            );
+        });
+    }
+
+    #[test]
+    fn test_submit_with_flash_loan_calls_hook() {
+        let e = Env::default();
+        e.cost_estimate().budget().reset_unlimited();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let (pool, hook, samwise, underlying_0, underlying_1) = hook_fixture(&e, true);
+        let hook_client = testutils::MockPoolHookClient::new(&e, &hook);
+        let (flash_loan_receiver, _) = testutils::create_flashloan_receiver(&e);
+        let underlying_1_client = MockTokenClient::new(&e, &underlying_1);
+        MockTokenClient::new(&e, &underlying_0).approve(
+            &samwise,
+            &pool,
+            &16_0000000,
+            &(e.ledger().sequence() + 100),
+        );
+        underlying_1_client.approve(&samwise, &pool, &1_5000000, &(e.ledger().sequence() + 100));
+
+        // borrow 1.5 of reserve 1 flash, put up collateral, repay the loan in the batch
+        let flash_loan = FlashLoan {
+            contract: flash_loan_receiver.clone(),
+            asset: underlying_1.clone(),
+            amount: 1_5000000,
+        };
+        let requests = vec![
+            &e,
+            Request {
+                request_type: RequestType::SupplyCollateral as u32,
+                address: underlying_0.clone(),
+                amount: 15_0000000,
+            },
+            Request {
+                request_type: RequestType::Repay as u32,
+                address: underlying_1.clone(),
+                amount: 1_5000000,
+            },
+        ];
+        let positions = e.as_contract(&pool, || {
+            execute_submit_with_flash_loan(&e, &samwise, flash_loan, requests)
+        });
+
+        assert_eq!(hook_client.calls(), 1);
+        let call = hook_client.last_submit().unwrap();
+        assert_eq!(call.from, samwise);
+        assert_eq!(call.spender, samwise);
+        assert_eq!(call.to, samwise);
+        assert_eq!(call.requests.len(), 2);
+        // the flash loaned reserve is loaded first, then the batch's reserves
+        assert_eq!(call.reserves.len(), 2);
+        assert_eq!(call.reserves.get_unchecked(0).asset, underlying_1);
+        assert_eq!(call.reserves.get_unchecked(1).asset, underlying_0);
+        assert_eq!(
+            call.positions.liabilities.len(),
+            positions.liabilities.len()
+        );
+        assert_eq!(
+            call.positions.collateral.get_unchecked(0),
+            positions.collateral.get_unchecked(0)
+        );
+    }
+
+    #[test]
+    fn test_submit_without_hook_makes_no_call_and_hook_cost_is_bounded() {
+        fn run(with_hook: bool) -> u64 {
+            let e = Env::default();
+            e.cost_estimate().budget().reset_unlimited();
+            e.mock_all_auths_allowing_non_root_auth();
+            let (pool, hook, samwise, underlying_0, underlying_1) = hook_fixture(&e, with_hook);
+            if with_hook {
+                testutils::MockPoolHookClient::new(&e, &hook).set_silent(&true);
+            }
+            let requests = vec![
+                &e,
+                Request {
+                    request_type: RequestType::SupplyCollateral as u32,
+                    address: underlying_0.clone(),
+                    amount: 15_0000000,
+                },
+                Request {
+                    request_type: RequestType::Borrow as u32,
+                    address: underlying_1.clone(),
+                    amount: 1_5000000,
+                },
+            ];
+            e.cost_estimate().budget().reset_default();
+            e.as_contract(&pool, || {
+                execute_submit(&e, &samwise, &samwise, &samwise, requests, false);
+            });
+            e.cost_estimate().budget().cpu_instruction_cost()
+        }
+        let without = run(false);
+        let with = run(true);
+        std::println!(
+            "submit cpu: no hook {without}, hook {with}, delta {}",
+            with - without
+        );
+        assert!(with > without);
+        // the call itself (marshalling two reserves, the requests and the positions into a
+        // no-op hook) stays under 10% of the submit; a real hook's own work comes on top
+        assert!(with - without < without / 10);
     }
 }

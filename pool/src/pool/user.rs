@@ -1,7 +1,7 @@
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::{contracttype, panic_with_error, Address, Env, Map};
 
-use crate::{constants::SCALAR_12, emissions, storage, validator::require_nonnegative, PoolError};
+use crate::{constants::SCALAR_12, storage, validator::require_nonnegative, PoolError};
 
 use super::{Pool, Reserve};
 
@@ -64,28 +64,24 @@ impl User {
         self.positions.liabilities.get(reserve_index).unwrap_or(0)
     }
 
-    /// Add liabilities to the position expressed in debtTokens. Accrues emissions
-    /// against the balance if necessary and updates the reserve's d_supply.
+    /// Add liabilities to the position expressed in debtTokens and updates the reserve's d_supply.
     pub fn add_liabilities(&mut self, e: &Env, reserve: &mut Reserve, amount: i128) {
         if amount <= 0 {
             panic_with_error!(e, PoolError::InvalidDTokenMintAmount)
         }
         let balance = self.get_liabilities(reserve.config.index);
-        self.update_d_emissions(e, reserve, balance);
         self.positions
             .liabilities
             .set(reserve.config.index, balance + amount);
         reserve.data.d_supply += amount;
     }
 
-    /// Remove liabilities from the position expressed in debtTokens. Accrues emissions
-    /// against the balance if necessary and updates the reserve's d_supply.
+    /// Remove liabilities from the position expressed in debtTokens and updates the reserve's d_supply.
     pub fn remove_liabilities(&mut self, e: &Env, reserve: &mut Reserve, amount: i128) {
         if amount <= 0 {
             panic_with_error!(e, PoolError::InvalidDTokenBurnAmount)
         }
         let balance = self.get_liabilities(reserve.config.index);
-        self.update_d_emissions(e, reserve, balance);
         let new_balance = balance - amount;
         require_nonnegative(e, &new_balance);
         if new_balance == 0 {
@@ -98,8 +94,7 @@ impl User {
         reserve.data.d_supply -= amount;
     }
 
-    /// Default on liabilities from the position expressed in debtTokens. Accrues emissions
-    /// against the balance if necessary and updates the reserve's b_rate and d_supply.
+    /// Default on liabilities from the position expressed in debtTokens and updates the reserve's b_rate and d_supply.
     ///
     /// This should only be called if the liabilities are being defaulted on. The liability will
     /// be forgiven and suppliers will lose funds.
@@ -125,28 +120,24 @@ impl User {
         self.positions.collateral.get(reserve_index).unwrap_or(0)
     }
 
-    /// Add collateral to the position expressed in blendTokens. Accrues emissions
-    /// against the balance if necessary and updates the reserve's b_supply.
+    /// Add collateral to the position expressed in blendTokens and updates the reserve's b_supply.
     pub fn add_collateral(&mut self, e: &Env, reserve: &mut Reserve, amount: i128) {
         if amount <= 0 {
             panic_with_error!(e, PoolError::InvalidBTokenMintAmount)
         }
         let balance = self.get_collateral(reserve.config.index);
-        self.update_b_emissions(e, reserve, self.get_total_supply(reserve.config.index));
         self.positions
             .collateral
             .set(reserve.config.index, balance + amount);
         reserve.data.b_supply += amount;
     }
 
-    /// Remove collateral from the position expressed in blendTokens. Accrues emissions
-    /// against the balance if necessary and updates the reserve's d_supply.
+    /// Remove collateral from the position expressed in blendTokens and updates the reserve's d_supply.
     pub fn remove_collateral(&mut self, e: &Env, reserve: &mut Reserve, amount: i128) {
         if amount <= 0 {
             panic_with_error!(e, PoolError::InvalidBTokenBurnAmount)
         }
         let balance = self.get_collateral(reserve.config.index);
-        self.update_b_emissions(e, reserve, self.get_total_supply(reserve.config.index));
         let new_balance = balance - amount;
         require_nonnegative(e, &new_balance);
         if new_balance == 0 {
@@ -164,28 +155,24 @@ impl User {
         self.positions.supply.get(reserve_index).unwrap_or(0)
     }
 
-    /// Add supply to the position expressed in blendTokens. Accrues emissions
-    /// against the balance if necessary and updates the reserve's b_supply.
+    /// Add supply to the position expressed in blendTokens and updates the reserve's b_supply.
     pub fn add_supply(&mut self, e: &Env, reserve: &mut Reserve, amount: i128) {
         if amount <= 0 {
             panic_with_error!(e, PoolError::InvalidBTokenMintAmount)
         }
         let balance = self.get_supply(reserve.config.index);
-        self.update_b_emissions(e, reserve, self.get_total_supply(reserve.config.index));
         self.positions
             .supply
             .set(reserve.config.index, balance + amount);
         reserve.data.b_supply += amount;
     }
 
-    /// Remove supply from the position expressed in blendTokens. Accrues emissions
-    /// against the balance if necessary and updates the reserve's b_supply.
+    /// Remove supply from the position expressed in blendTokens and updates the reserve's b_supply.
     pub fn remove_supply(&mut self, e: &Env, reserve: &mut Reserve, amount: i128) {
         if amount <= 0 {
             panic_with_error!(e, PoolError::InvalidBTokenBurnAmount)
         }
         let balance = self.get_supply(reserve.config.index);
-        self.update_b_emissions(e, reserve, self.get_total_supply(reserve.config.index));
         let new_balance = balance - amount;
         require_nonnegative(e, &new_balance);
         if new_balance == 0 {
@@ -248,39 +235,13 @@ impl User {
             }
         }
     }
-
-    fn update_d_emissions(&self, e: &Env, reserve: &Reserve, amount: i128) {
-        emissions::update_emissions(
-            e,
-            reserve.config.index * 2,
-            reserve.data.d_supply,
-            reserve.scalar,
-            &self.address,
-            amount,
-        );
-    }
-
-    fn update_b_emissions(&self, e: &Env, reserve: &Reserve, amount: i128) {
-        emissions::update_emissions(
-            e,
-            reserve.config.index * 2 + 1,
-            reserve.data.b_supply,
-            reserve.scalar,
-            &self.address,
-            amount,
-        );
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{constants::SCALAR_7, storage, testutils, ReserveEmissionData, UserEmissionData};
-    use soroban_fixed_point_math::SorobanFixedPoint;
-    use soroban_sdk::{
-        map,
-        testutils::{Address as _, Ledger, LedgerInfo},
-    };
+    use crate::testutils;
+    use soroban_sdk::{map, testutils::Address as _};
 
     #[test]
     fn test_load_and_store() {
@@ -379,77 +340,6 @@ mod tests {
     }
 
     #[test]
-    fn test_add_liabilities_accrues_emissions() {
-        let e = Env::default();
-        e.mock_all_auths();
-        let samwise = Address::generate(&e);
-        let pool = testutils::create_pool(&e);
-
-        e.ledger().set(LedgerInfo {
-            protocol_version: 22,
-            sequence_number: 1,
-            timestamp: 10001000,
-            network_id: Default::default(),
-            base_reserve: 10,
-            min_temp_entry_ttl: 10,
-            min_persistent_entry_ttl: 10,
-            max_entry_ttl: 3110400,
-        });
-
-        let mut reserve_0 = testutils::default_reserve(&e);
-        let starting_d_supply_0 = reserve_0.data.d_supply;
-
-        let emis_res_data = ReserveEmissionData {
-            expiration: 20000000,
-            eps: 0_10000000000000,
-            index: 10000000000,
-            last_time: 10000000, // 1000s elapsed
-        };
-        let emis_user_data = UserEmissionData {
-            index: 9000000000,
-            accrued: 0,
-        };
-
-        let mut user = User {
-            address: samwise.clone(),
-            positions: Positions {
-                liabilities: map![&e, (reserve_0.config.index, 1000)],
-                collateral: map![&e],
-                supply: map![&e],
-            },
-        };
-
-        e.as_contract(&pool, || {
-            let res_0_d_token_index = reserve_0.config.index * 2 + 0;
-            storage::set_res_emis_data(&e, &res_0_d_token_index, &emis_res_data);
-            storage::set_user_emissions(&e, &samwise, &res_0_d_token_index, &emis_user_data);
-
-            user.add_liabilities(&e, &mut reserve_0, 123);
-            assert_eq!(user.get_liabilities(0), 1123);
-            assert_eq!(reserve_0.data.d_supply, starting_d_supply_0 + 123);
-
-            let new_emis_res_data = storage::get_res_emis_data(&e, &res_0_d_token_index).unwrap();
-            let new_index = 10000000000
-                + (1000i128 * 0_10000000000000).fixed_div_floor(
-                    &e,
-                    &starting_d_supply_0,
-                    &SCALAR_7,
-                );
-            assert_eq!(new_emis_res_data.last_time, 10001000);
-            assert_eq!(new_emis_res_data.index, new_index);
-            let user_emis_data =
-                storage::get_user_emissions(&e, &samwise, &res_0_d_token_index).unwrap();
-            let new_accrual = 0
-                + (new_index - emis_user_data.index).fixed_mul_floor(
-                    &e,
-                    &1000,
-                    &(SCALAR_7 * SCALAR_7),
-                );
-            assert_eq!(user_emis_data.accrued, new_accrual);
-        });
-    }
-
-    #[test]
     #[should_panic(expected = "Error(Contract, #1219)")]
     fn test_remove_liabilities_zero_burn() {
         let e = Env::default();
@@ -470,75 +360,6 @@ mod tests {
             assert_eq!(user.get_liabilities(0), 123);
 
             user.remove_liabilities(&e, &mut reserve_0, 0);
-        });
-    }
-
-    #[test]
-    fn test_remove_liabilities_accrues_emissions() {
-        let e = Env::default();
-        e.mock_all_auths();
-        let samwise = Address::generate(&e);
-        let pool = testutils::create_pool(&e);
-
-        e.ledger().set(LedgerInfo {
-            protocol_version: 22,
-            sequence_number: 1,
-            timestamp: 10001000,
-            network_id: Default::default(),
-            base_reserve: 10,
-            min_temp_entry_ttl: 10,
-            min_persistent_entry_ttl: 10,
-            max_entry_ttl: 3110400,
-        });
-
-        let mut reserve_0 = testutils::default_reserve(&e);
-        let starting_d_supply_0 = reserve_0.data.d_supply;
-
-        let emis_res_data = ReserveEmissionData {
-            expiration: 20000000,
-            eps: 0_10000000000000,
-            index: 10000000000,
-            last_time: 10000000, // 1000s elapsed
-        };
-        let emis_user_data = UserEmissionData {
-            index: 9000000000,
-            accrued: 0,
-        };
-        let mut user = User {
-            address: samwise.clone(),
-            positions: Positions {
-                liabilities: map![&e, (reserve_0.config.index, 1000)],
-                collateral: map![&e],
-                supply: map![&e],
-            },
-        };
-        e.as_contract(&pool, || {
-            let res_0_d_token_index = reserve_0.config.index * 2 + 0;
-            storage::set_res_emis_data(&e, &res_0_d_token_index, &emis_res_data);
-            storage::set_user_emissions(&e, &samwise, &res_0_d_token_index, &emis_user_data);
-
-            user.remove_liabilities(&e, &mut reserve_0, 123);
-            assert_eq!(user.get_liabilities(0), 877);
-            assert_eq!(reserve_0.data.d_supply, starting_d_supply_0 - 123);
-
-            let new_emis_res_data = storage::get_res_emis_data(&e, &res_0_d_token_index).unwrap();
-            let new_index = 10000000000
-                + (1000i128 * 0_1000000).fixed_div_floor(
-                    &e,
-                    &starting_d_supply_0,
-                    &(SCALAR_7 * SCALAR_7),
-                );
-            assert_eq!(new_emis_res_data.last_time, 10001000);
-            assert_eq!(new_emis_res_data.index, new_index);
-            let user_emis_data =
-                storage::get_user_emissions(&e, &samwise, &res_0_d_token_index).unwrap();
-            let new_accrual = 0
-                + (new_index - emis_user_data.index).fixed_mul_floor(
-                    &e,
-                    &1000,
-                    &(SCALAR_7 * SCALAR_7),
-                );
-            assert_eq!(user_emis_data.accrued, new_accrual);
         });
     }
 
@@ -750,76 +571,6 @@ mod tests {
     }
 
     #[test]
-    fn test_add_collateral_accrues_emissions() {
-        let e = Env::default();
-        e.mock_all_auths();
-        let samwise = Address::generate(&e);
-        let pool = testutils::create_pool(&e);
-
-        e.ledger().set(LedgerInfo {
-            protocol_version: 22,
-            sequence_number: 1,
-            timestamp: 10001000,
-            network_id: Default::default(),
-            base_reserve: 10,
-            min_temp_entry_ttl: 10,
-            min_persistent_entry_ttl: 10,
-            max_entry_ttl: 3110400,
-        });
-
-        let mut reserve_0 = testutils::default_reserve(&e);
-        let starting_b_token_supply = reserve_0.data.b_supply;
-
-        let emis_res_data = ReserveEmissionData {
-            expiration: 20000000,
-            eps: 0_10000000000000,
-            index: 10000000000,
-            last_time: 10000000, // 1000s elapsed
-        };
-        let emis_user_data = UserEmissionData {
-            index: 9000000000,
-            accrued: 0,
-        };
-
-        let mut user = User {
-            address: samwise.clone(),
-            positions: Positions {
-                liabilities: map![&e],
-                collateral: map![&e, (reserve_0.config.index, 700)],
-                supply: map![&e, (reserve_0.config.index, 300)],
-            },
-        };
-        e.as_contract(&pool, || {
-            let res_0_d_token_index = reserve_0.config.index * 2 + 1;
-            storage::set_res_emis_data(&e, &res_0_d_token_index, &emis_res_data);
-            storage::set_user_emissions(&e, &samwise, &res_0_d_token_index, &emis_user_data);
-
-            user.add_collateral(&e, &mut reserve_0, 123);
-            assert_eq!(user.get_collateral(0), 823);
-            assert_eq!(reserve_0.data.b_supply, starting_b_token_supply + 123);
-
-            let new_emis_res_data = storage::get_res_emis_data(&e, &res_0_d_token_index).unwrap();
-            let new_index = 10000000000
-                + (1000i128 * 0_1000000).fixed_div_floor(
-                    &e,
-                    &starting_b_token_supply,
-                    &(SCALAR_7 * SCALAR_7),
-                );
-            assert_eq!(new_emis_res_data.last_time, 10001000);
-            assert_eq!(new_emis_res_data.index, new_index);
-            let user_emis_data =
-                storage::get_user_emissions(&e, &samwise, &res_0_d_token_index).unwrap();
-            let new_accrual = 0
-                + (new_index - emis_user_data.index).fixed_mul_floor(
-                    &e,
-                    &1000,
-                    &(SCALAR_7 * SCALAR_7),
-                );
-            assert_eq!(user_emis_data.accrued, new_accrual);
-        });
-    }
-
-    #[test]
     #[should_panic(expected = "Error(Contract, #1217)")]
     fn test_remove_collateral_zero_burn() {
         let e = Env::default();
@@ -840,76 +591,6 @@ mod tests {
             assert_eq!(user.get_collateral(0), 123);
 
             user.remove_collateral(&e, &mut reserve_0, 0);
-        });
-    }
-
-    #[test]
-    fn test_remove_collateral_accrues_emissions() {
-        let e = Env::default();
-        e.mock_all_auths();
-        let samwise = Address::generate(&e);
-        let pool = testutils::create_pool(&e);
-
-        e.ledger().set(LedgerInfo {
-            protocol_version: 22,
-            sequence_number: 1,
-            timestamp: 10001000,
-            network_id: Default::default(),
-            base_reserve: 10,
-            min_temp_entry_ttl: 10,
-            min_persistent_entry_ttl: 10,
-            max_entry_ttl: 3110400,
-        });
-
-        let mut reserve_0 = testutils::default_reserve(&e);
-        let starting_b_token_supply = reserve_0.data.b_supply;
-
-        let emis_res_data = ReserveEmissionData {
-            expiration: 20000000,
-            eps: 0_10000000000000,
-            index: 10000000000,
-            last_time: 10000000, // 1000s elapsed
-        };
-        let emis_user_data = UserEmissionData {
-            index: 9000000000,
-            accrued: 0,
-        };
-
-        let mut user = User {
-            address: samwise.clone(),
-            positions: Positions {
-                liabilities: map![&e],
-                collateral: map![&e, (reserve_0.config.index, 700)],
-                supply: map![&e, (reserve_0.config.index, 300)],
-            },
-        };
-        e.as_contract(&pool, || {
-            let res_0_d_token_index = reserve_0.config.index * 2 + 1;
-            storage::set_res_emis_data(&e, &res_0_d_token_index, &emis_res_data);
-            storage::set_user_emissions(&e, &samwise, &res_0_d_token_index, &emis_user_data);
-
-            user.remove_collateral(&e, &mut reserve_0, 123);
-            assert_eq!(user.get_collateral(0), 577);
-            assert_eq!(reserve_0.data.b_supply, starting_b_token_supply - 123);
-
-            let new_emis_res_data = storage::get_res_emis_data(&e, &res_0_d_token_index).unwrap();
-            let new_index = 10000000000
-                + (1000i128 * 0_1000000).fixed_div_floor(
-                    &e,
-                    &starting_b_token_supply,
-                    &(SCALAR_7 * SCALAR_7),
-                );
-            assert_eq!(new_emis_res_data.last_time, 10001000);
-            assert_eq!(new_emis_res_data.index, new_index);
-            let user_emis_data =
-                storage::get_user_emissions(&e, &samwise, &res_0_d_token_index).unwrap();
-            let new_accrual = 0
-                + (new_index - emis_user_data.index).fixed_mul_floor(
-                    &e,
-                    &1000,
-                    &(SCALAR_7 * SCALAR_7),
-                );
-            assert_eq!(user_emis_data.accrued, new_accrual);
         });
     }
 
@@ -998,76 +679,6 @@ mod tests {
     }
 
     #[test]
-    fn test_add_supply_accrues_emissions() {
-        let e = Env::default();
-        e.mock_all_auths();
-        let samwise = Address::generate(&e);
-        let pool = testutils::create_pool(&e);
-
-        e.ledger().set(LedgerInfo {
-            protocol_version: 22,
-            sequence_number: 1,
-            timestamp: 10001000,
-            network_id: Default::default(),
-            base_reserve: 10,
-            min_temp_entry_ttl: 10,
-            min_persistent_entry_ttl: 10,
-            max_entry_ttl: 3110400,
-        });
-
-        let mut reserve_0 = testutils::default_reserve(&e);
-        let starting_b_token_supply = reserve_0.data.b_supply;
-
-        let emis_res_data = ReserveEmissionData {
-            expiration: 20000000,
-            eps: 0_10000000000000,
-            index: 10000000000,
-            last_time: 10000000, // 1000s elapsed
-        };
-        let emis_user_data = UserEmissionData {
-            index: 9000000000,
-            accrued: 0,
-        };
-
-        let mut user = User {
-            address: samwise.clone(),
-            positions: Positions {
-                liabilities: map![&e],
-                collateral: map![&e, (reserve_0.config.index, 700)],
-                supply: map![&e, (reserve_0.config.index, 300)],
-            },
-        };
-        e.as_contract(&pool, || {
-            let res_0_d_token_index = reserve_0.config.index * 2 + 1;
-            storage::set_res_emis_data(&e, &res_0_d_token_index, &emis_res_data);
-            storage::set_user_emissions(&e, &samwise, &res_0_d_token_index, &emis_user_data);
-
-            user.add_supply(&e, &mut reserve_0, 123);
-            assert_eq!(user.get_supply(0), 423);
-            assert_eq!(reserve_0.data.b_supply, starting_b_token_supply + 123);
-
-            let new_emis_res_data = storage::get_res_emis_data(&e, &res_0_d_token_index).unwrap();
-            let new_index = 10000000000
-                + (1000i128 * 0_1000000).fixed_div_floor(
-                    &e,
-                    &starting_b_token_supply,
-                    &(SCALAR_7 * SCALAR_7),
-                );
-            assert_eq!(new_emis_res_data.last_time, 10001000);
-            assert_eq!(new_emis_res_data.index, new_index);
-            let user_emis_data =
-                storage::get_user_emissions(&e, &samwise, &res_0_d_token_index).unwrap();
-            let new_accrual = 0
-                + (new_index - emis_user_data.index).fixed_mul_floor(
-                    &e,
-                    &1000,
-                    &(SCALAR_7 * SCALAR_7),
-                );
-            assert_eq!(user_emis_data.accrued, new_accrual);
-        });
-    }
-
-    #[test]
     #[should_panic(expected = "Error(Contract, #1217)")]
     fn test_remove_supply_zero_burn() {
         let e = Env::default();
@@ -1088,76 +699,6 @@ mod tests {
             assert_eq!(user.get_supply(0), 123);
 
             user.remove_supply(&e, &mut reserve_0, 0);
-        });
-    }
-
-    #[test]
-    fn test_remove_supply_accrues_emissions() {
-        let e = Env::default();
-        e.mock_all_auths();
-        let samwise = Address::generate(&e);
-        let pool = testutils::create_pool(&e);
-
-        e.ledger().set(LedgerInfo {
-            protocol_version: 22,
-            sequence_number: 1,
-            timestamp: 10001000,
-            network_id: Default::default(),
-            base_reserve: 10,
-            min_temp_entry_ttl: 10,
-            min_persistent_entry_ttl: 10,
-            max_entry_ttl: 3110400,
-        });
-
-        let mut reserve_0 = testutils::default_reserve(&e);
-        let starting_b_token_supply = reserve_0.data.b_supply;
-
-        let emis_res_data = ReserveEmissionData {
-            expiration: 20000000,
-            eps: 0_10000000000000,
-            index: 10000000000,
-            last_time: 10000000, // 1000s elapsed
-        };
-        let emis_user_data = UserEmissionData {
-            index: 9000000000,
-            accrued: 0,
-        };
-
-        let mut user = User {
-            address: samwise.clone(),
-            positions: Positions {
-                liabilities: map![&e],
-                collateral: map![&e, (reserve_0.config.index, 700)],
-                supply: map![&e, (reserve_0.config.index, 300)],
-            },
-        };
-        e.as_contract(&pool, || {
-            let res_0_d_token_index = reserve_0.config.index * 2 + 1;
-            storage::set_res_emis_data(&e, &res_0_d_token_index, &emis_res_data);
-            storage::set_user_emissions(&e, &samwise, &res_0_d_token_index, &emis_user_data);
-
-            user.remove_supply(&e, &mut reserve_0, 123);
-            assert_eq!(user.get_supply(0), 177);
-            assert_eq!(reserve_0.data.b_supply, starting_b_token_supply - 123);
-
-            let new_emis_res_data = storage::get_res_emis_data(&e, &res_0_d_token_index).unwrap();
-            let new_index = 10000000000
-                + (1000i128 * 0_1000000).fixed_div_floor(
-                    &e,
-                    &starting_b_token_supply,
-                    &(SCALAR_7 * SCALAR_7),
-                );
-            assert_eq!(new_emis_res_data.last_time, 10001000);
-            assert_eq!(new_emis_res_data.index, new_index);
-            let user_emis_data =
-                storage::get_user_emissions(&e, &samwise, &res_0_d_token_index).unwrap();
-            let new_accrual = 0
-                + (new_index - emis_user_data.index).fixed_mul_floor(
-                    &e,
-                    &1000,
-                    &(SCALAR_7 * SCALAR_7),
-                );
-            assert_eq!(user_emis_data.accrued, new_accrual);
         });
     }
 

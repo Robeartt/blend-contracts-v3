@@ -57,6 +57,19 @@ impl Pool {
         self.reserves.set(reserve.asset.clone(), reserve);
     }
 
+    /// The cached reserves the current batch touched, in the order they were first loaded
+    pub fn touched_reserves(&self, e: &Env) -> Vec<Reserve> {
+        let mut reserves = vec![e];
+        for address in self.reserves_to_store.iter() {
+            let reserve = self
+                .reserves
+                .get(address)
+                .unwrap_or_else(|| panic_with_error!(e, PoolError::InternalReserveNotFound));
+            reserves.push_back(reserve);
+        }
+        reserves
+    }
+
     /// Store the cached reserves to the ledger that need to be written.
     pub fn store_cached_reserves(&self, e: &Env) {
         for address in self.reserves_to_store.iter() {
@@ -133,6 +146,7 @@ impl Pool {
 
 #[cfg(test)]
 mod tests {
+    use crate::testutils::PROTOCOL_VERSION;
     use sep_40_oracle::testutils::Asset;
     use soroban_sdk::{
         testutils::{Address as _, Ledger, LedgerInfo},
@@ -150,7 +164,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 123456 * 5,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 123456,
             network_id: Default::default(),
             base_reserve: 10,
@@ -212,7 +226,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 123456 * 5,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 123456,
             network_id: Default::default(),
             base_reserve: 10,
@@ -300,7 +314,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 123456 * 5,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 123456,
             network_id: Default::default(),
             base_reserve: 10,
@@ -358,7 +372,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 123456 * 5,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 123456,
             network_id: Default::default(),
             base_reserve: 10,
@@ -649,7 +663,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 1000 + 24 * 60 * 60 + 1,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
@@ -694,7 +708,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 1000 + 24 * 60 * 60 + 1,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 1234,
             network_id: Default::default(),
             base_reserve: 10,
