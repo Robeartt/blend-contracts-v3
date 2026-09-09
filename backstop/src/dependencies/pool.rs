@@ -1,5 +1,5 @@
 /**
- * Partial client for the pool cr
+ * Partial client for the pool contract
  */
 use soroban_sdk::{contractclient, contracttype, Address, Env, Map};
 
