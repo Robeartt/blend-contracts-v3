@@ -1,6 +1,6 @@
 use soroban_sdk::{
-    contracttype, map, panic_with_error, unwrap::UnwrapOptimized, vec, Address, Env, IntoVal, Map,
-    String, Symbol, TryFromVal, Val, Vec,
+    contracttype, panic_with_error, unwrap::UnwrapOptimized, vec, Address, Env, IntoVal, String,
+    Symbol, TryFromVal, Val, Vec,
 };
 
 use crate::{auctions::AuctionData, constants::MAX_RESERVES, pool::Positions, PoolError};
@@ -29,14 +29,6 @@ pub struct PoolConfig {
     pub bstop_rate: u32, // the rate the backstop takes on accrued debt interest, expressed in 7 decimals
     pub status: u32,     // the status of the pool
     pub max_positions: u32, // the maximum number of effective positions a single user can hold, and the max assets an auction can contain
-}
-
-/// The pool's emission config
-#[derive(Clone)]
-#[contracttype]
-pub struct PoolEmissionConfig {
-    pub config: u128,
-    pub last_time: u64,
 }
 
 /// The configuration information about a reserve asset
@@ -78,41 +70,16 @@ pub struct ReserveData {
     pub last_time: u64, // the last block the data was updated
 }
 
-/// The emission data for the reserve b or d token
-#[derive(Clone)]
-#[contracttype]
-pub struct ReserveEmissionData {
-    pub expiration: u64,
-    pub eps: u64,
-    pub index: i128,
-    pub last_time: u64,
-}
-
-/// The user emission data for the reserve b or d token
-#[derive(Clone)]
-#[contracttype]
-pub struct UserEmissionData {
-    pub index: i128,
-    pub accrued: i128,
-}
-
 /********** Storage Key Types **********/
 
 const ADMIN_KEY: &str = "Admin";
 const PROPOSED_ADMIN_KEY: &str = "PropAdmin";
 const NAME_KEY: &str = "Name";
 const BACKSTOP_KEY: &str = "Backstop";
-const BLND_TOKEN_KEY: &str = "BLNDTkn";
+const MIN_BACKSTOP_KEY: &str = "MinBackstop";
+const HOOK_KEY: &str = "Hook";
 const POOL_CONFIG_KEY: &str = "Config";
 const RES_LIST_KEY: &str = "ResList";
-const POOL_EMIS_KEY: &str = "PoolEmis";
-
-#[derive(Clone)]
-#[contracttype]
-pub struct UserReserveKey {
-    user: Address,
-    reserve_id: u32,
-}
 
 #[derive(Clone)]
 #[contracttype]
@@ -130,12 +97,8 @@ pub enum PoolDataKey {
     ResInit(Address),
     // A map of underlying asset's contract address to reserve data
     ResData(Address),
-    // The reserve's emission data
-    EmisData(u32),
     // Map of positions in the pool for a user
     Positions(Address),
-    // The emission information for a reserve asset for a user
-    UserEmis(UserReserveKey),
     // The auction's data
     Auction(AuctionKey),
 }
@@ -282,24 +245,41 @@ pub fn set_backstop(e: &Env, backstop: &Address) {
         .set::<Symbol, Address>(&Symbol::new(e, BACKSTOP_KEY), backstop);
 }
 
-/********** External Token Contracts **********/
-
-/// Fetch the BLND token ID
-pub fn get_blnd_token(e: &Env) -> Address {
+/// Fetch the backstop tokens required for the pool to activate, in the backstop token's decimals.
+/// 0 means the pool has no backstop requirement.
+pub fn get_min_backstop(e: &Env) -> i128 {
     e.storage()
         .instance()
-        .get(&Symbol::new(e, BLND_TOKEN_KEY))
+        .get(&Symbol::new(e, MIN_BACKSTOP_KEY))
         .unwrap_optimized()
 }
 
-/// Set a new BLND token ID
+/// Set the backstop tokens required for the pool to activate
 ///
 /// ### Arguments
-/// * `blnd_token_id` - The ID of the BLND token
-pub fn set_blnd_token(e: &Env, blnd_token_id: &Address) {
+/// * `min_backstop` - The backstop tokens required, in the backstop token's decimals
+pub fn set_min_backstop(e: &Env, min_backstop: i128) {
     e.storage()
         .instance()
-        .set::<Symbol, Address>(&Symbol::new(e, BLND_TOKEN_KEY), blnd_token_id);
+        .set::<Symbol, i128>(&Symbol::new(e, MIN_BACKSTOP_KEY), &min_backstop);
+}
+
+/// Fetch the hook called after submits, if any
+pub fn get_hook(e: &Env) -> Option<Address> {
+    e.storage()
+        .instance()
+        .get::<Symbol, Option<Address>>(&Symbol::new(e, HOOK_KEY))
+        .unwrap_or(None)
+}
+
+/// Set the hook called after submits
+///
+/// ### Arguments
+/// * `hook` - The hook contract address, if any
+pub fn set_hook(e: &Env, hook: &Option<Address>) {
+    e.storage()
+        .instance()
+        .set::<Symbol, Option<Address>>(&Symbol::new(e, HOOK_KEY), hook);
 }
 
 /********** Pool Config **********/
@@ -493,105 +473,6 @@ pub fn push_res_list(e: &Env, asset: &Address) -> u32 {
         LEDGER_BUMP_SHARED,
     );
     new_index
-}
-
-/********** Reserve Emissions **********/
-
-/// Fetch the emission data for the reserve b or d token
-///
-/// ### Arguments
-/// * `res_token_index` - The d/bToken index for the reserve
-pub fn get_res_emis_data(e: &Env, res_token_index: &u32) -> Option<ReserveEmissionData> {
-    let key = PoolDataKey::EmisData(*res_token_index);
-    get_persistent_default(
-        e,
-        &key,
-        || None,
-        LEDGER_THRESHOLD_SHARED,
-        LEDGER_BUMP_SHARED,
-    )
-}
-
-/// Set the emission data for the reserve b or d token
-///
-/// ### Arguments
-/// * `res_token_index` - The d/bToken index for the reserve
-/// * `res_emis_data` - The new emission data for the reserve token
-pub fn set_res_emis_data(e: &Env, res_token_index: &u32, res_emis_data: &ReserveEmissionData) {
-    let key = PoolDataKey::EmisData(*res_token_index);
-    e.storage()
-        .persistent()
-        .set::<PoolDataKey, ReserveEmissionData>(&key, res_emis_data);
-    e.storage()
-        .persistent()
-        .extend_ttl(&key, LEDGER_THRESHOLD_SHARED, LEDGER_BUMP_SHARED);
-}
-
-/********** User Emissions **********/
-
-/// Fetch the users emission data for a reserve's b or d token
-///
-/// ### Arguments
-/// * `user` - The address of the user
-/// * `res_token_index` - The d/bToken index for the reserve
-pub fn get_user_emissions(
-    e: &Env,
-    user: &Address,
-    res_token_index: &u32,
-) -> Option<UserEmissionData> {
-    let key = PoolDataKey::UserEmis(UserReserveKey {
-        user: user.clone(),
-        reserve_id: *res_token_index,
-    });
-    get_persistent_default(e, &key, || None, LEDGER_THRESHOLD_USER, LEDGER_BUMP_USER)
-}
-
-/// Set the users emission data for a reserve's d or d token
-///
-/// ### Arguments
-/// * `user` - The address of the user
-/// * `res_token_index` - The d/bToken index for the reserve
-/// * `data` - The new user emission d ata for the d/bToken
-pub fn set_user_emissions(e: &Env, user: &Address, res_token_index: &u32, data: &UserEmissionData) {
-    let key = PoolDataKey::UserEmis(UserReserveKey {
-        user: user.clone(),
-        reserve_id: *res_token_index,
-    });
-    e.storage()
-        .persistent()
-        .set::<PoolDataKey, UserEmissionData>(&key, data);
-    e.storage()
-        .persistent()
-        .extend_ttl(&key, LEDGER_THRESHOLD_USER, LEDGER_BUMP_USER);
-}
-
-/********** Pool Emissions **********/
-
-/// Fetch the pool reserve emissions
-pub fn get_pool_emissions(e: &Env) -> Map<u32, u64> {
-    get_persistent_default(
-        e,
-        &Symbol::new(e, POOL_EMIS_KEY),
-        || map![e],
-        LEDGER_THRESHOLD_SHARED,
-        LEDGER_BUMP_SHARED,
-    )
-}
-
-/// Set the pool reserve emissions
-///
-/// ### Arguments
-/// * `emissions` - The map of emissions by reserve token id to share of emissions as
-///                 a percentage of 1e7 (e.g. 15% = 1500000)
-pub fn set_pool_emissions(e: &Env, emissions: &Map<u32, u64>) {
-    e.storage()
-        .persistent()
-        .set::<Symbol, Map<u32, u64>>(&Symbol::new(e, POOL_EMIS_KEY), emissions);
-    e.storage().persistent().extend_ttl(
-        &Symbol::new(e, POOL_EMIS_KEY),
-        LEDGER_THRESHOLD_SHARED,
-        LEDGER_BUMP_SHARED,
-    );
 }
 
 /********** Auctions ***********/

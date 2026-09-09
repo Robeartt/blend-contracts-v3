@@ -4,19 +4,23 @@ use crate::{
     constants::{SCALAR_12, SCALAR_7},
     pool::Reserve,
     storage::{self, ReserveConfig, ReserveData},
-    PoolContract,
+    PoolContract, PoolError, Positions, Request,
 };
-use blend_contract_sdk::emitter::{Client as EmitterClient, WASM as EmitterWASM};
 use sep_40_oracle::testutils::{MockPriceOracleClient, MockPriceOracleWASM};
 use sep_41_token::testutils::{MockTokenClient, MockTokenWASM};
 use soroban_fixed_point_math::SorobanFixedPoint;
-use soroban_sdk::{testutils::Address as _, vec, Address, BytesN, Env, IntoVal, String};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, panic_with_error, testutils::Address as _, Address, Env,
+    IntoVal, String, Symbol, Vec,
+};
 
-use backstop::{BackstopClient, BackstopContract};
-use mock_pool_factory::{MockPoolFactory, MockPoolFactoryClient, PoolInitMeta};
+use backstop::{BackstopContract, BackstopContractClient};
 use moderc3156_example::{
     FlashLoanReceiverModifiedERC3156, FlashLoanReceiverModifiedERC3156Client,
 };
+
+/// The protocol version every test ledger runs at
+pub(crate) const PROTOCOL_VERSION: u32 = 27;
 
 /// Create a pool contract.
 ///
@@ -32,8 +36,9 @@ pub(crate) fn create_pool(e: &Env) -> Address {
             0_1000000u32,
             4u32,
             1_0000000i128,
+            0i128,
             Address::generate(e),
-            Address::generate(e),
+            None::<Address>,
         ),
     )
 }
@@ -57,20 +62,15 @@ pub(crate) fn create_token_contract<'a>(
 
 pub(crate) fn create_blnd_token<'a>(
     e: &Env,
-    pool_address: &Address,
+    _pool_address: &Address,
     admin: &Address,
 ) -> (Address, MockTokenClient<'a>) {
-    let (contract_address, client) = create_token_contract(e, admin);
-
-    e.as_contract(pool_address, || {
-        storage::set_blnd_token(e, &contract_address);
-    });
-    (contract_address, client)
+    create_token_contract(e, admin)
 }
 
 //***** Oracle ******
 
-pub(crate) fn create_mock_oracle(e: &Env) -> (Address, MockPriceOracleClient) {
+pub(crate) fn create_mock_oracle(e: &Env) -> (Address, MockPriceOracleClient<'_>) {
     let contract_address = e.register(MockPriceOracleWASM, ());
     (
         contract_address.clone(),
@@ -78,101 +78,167 @@ pub(crate) fn create_mock_oracle(e: &Env) -> (Address, MockPriceOracleClient) {
     )
 }
 
-//***** Pool Factory ******
+//***** Pool Backstop ******
 
-pub(crate) fn create_mock_pool_factory(e: &Env) -> (Address, MockPoolFactoryClient) {
-    let pool_init_meta = PoolInitMeta {
-        backstop: Address::generate(e),
-        pool_hash: BytesN::<32>::from_array(&e, &[0u8; 32]),
-        blnd_id: Address::generate(e),
-    };
-    let contract_address = e.register(MockPoolFactory {}, (pool_init_meta,));
-    (
-        contract_address.clone(),
-        MockPoolFactoryClient::new(e, &contract_address),
-    )
-}
-
-//***** Pool Factory ******
-
-pub(crate) fn create_emitter<'a>(
-    e: &Env,
-    backstop_id: &Address,
-    backstop_token: &Address,
-    blnd_token: &Address,
-) -> (Address, EmitterClient<'a>) {
-    let contract_address = e.register(EmitterWASM, ());
-    let client = EmitterClient::new(e, &contract_address);
-    client.initialize(blnd_token, backstop_id, backstop_token);
-    (contract_address.clone(), client)
-}
-
-//***** Backstop ******
-
-mod comet {
-    soroban_sdk::contractimport!(file = "../comet.wasm");
-}
-
+/// Deploy a backstop for `pool_address` holding `backstop_token` with a treasury taking no
+/// share of donations, set it as the pool's backstop and set the pool's `min_backstop`
+/// activation threshold.
 pub(crate) fn create_backstop<'a>(
     e: &Env,
     pool_address: &Address,
     backstop_token: &Address,
-    usdc_token: &Address,
-    blnd_token: &Address,
-) -> (Address, BackstopClient<'a>) {
-    let backstop_id = Address::generate(e);
-    let (pool_factory, mock_pool_factory_client) = create_mock_pool_factory(e);
-    mock_pool_factory_client.set_pool(pool_address);
-    let (emitter, _) = create_emitter(e, &backstop_id, backstop_token, blnd_token);
-    e.register_at(
-        &backstop_id,
+    min_backstop: i128,
+) -> (Address, BackstopContractClient<'a>) {
+    let (treasury_id, _) = create_mock_treasury(e, 0);
+    let backstop_id = e.register(
         BackstopContract {},
         (
+            pool_address,
             backstop_token,
-            emitter,
-            blnd_token,
-            usdc_token,
-            pool_factory,
-            vec![e, (pool_address.clone(), 40_000_000 * SCALAR_7)],
+            &treasury_id,
+            0u32,
+            String::from_str(e, "Backstop Share"),
+            String::from_str(e, "BSS"),
+            None::<Address>,
         ),
     );
     e.as_contract(pool_address, || {
         storage::set_backstop(e, &backstop_id);
+        storage::set_min_backstop(e, min_backstop);
     });
-    (backstop_id.clone(), BackstopClient::new(e, &backstop_id))
+    (
+        backstop_id.clone(),
+        BackstopContractClient::new(e, &backstop_id),
+    )
 }
 
-/// Deploy a test Comet LP pool of 80% BLND / 20% USDC and set it as the backstop token.
-///
-/// Initializes the pool with the following settings:
-/// - Swap fee: 0.3%
-/// - BLND: 1,000
-/// - USDC: 25
-/// - Shares: 100
-pub(crate) fn create_comet_lp_pool<'a>(
+//***** Treasury ******
+
+/// A treasury that reports whatever rate it is given, with no cap
+#[contract]
+pub struct MockTreasury;
+
+#[contractimpl]
+impl MockTreasury {
+    pub fn set_rate(e: Env, rate: u32) {
+        e.storage().instance().set(&Symbol::new(&e, "Rate"), &rate);
+    }
+
+    pub fn get_rate(e: Env) -> u32 {
+        e.storage()
+            .instance()
+            .get(&Symbol::new(&e, "Rate"))
+            .unwrap_or(0)
+    }
+}
+
+/// Deploy a mock treasury reporting `rate`
+pub(crate) fn create_mock_treasury<'a>(e: &Env, rate: u32) -> (Address, MockTreasuryClient<'a>) {
+    let treasury_id = e.register(MockTreasury {}, ());
+    let client = MockTreasuryClient::new(e, &treasury_id);
+    client.set_rate(&rate);
+    (treasury_id, client)
+}
+
+//***** Pool Hook ******
+
+/// The last submit a mock hook saw
+#[derive(Clone)]
+#[contracttype]
+pub struct SubmitCall {
+    pub from: Address,
+    pub spender: Address,
+    pub to: Address,
+    pub requests: Vec<Request>,
+    pub reserves: Vec<Reserve>,
+    pub positions: Positions,
+}
+
+/// A hook that counts and records submits and rejects when `rejecting` is set
+#[contract]
+pub struct MockPoolHook;
+
+#[contractimpl]
+impl MockPoolHook {
+    pub fn set_rejecting(e: Env, rejecting: bool) {
+        e.storage()
+            .instance()
+            .set(&Symbol::new(&e, "Reject"), &rejecting);
+    }
+
+    /// Return immediately from `on_submit`, to measure the pool's cost of calling a hook
+    pub fn set_silent(e: Env, silent: bool) {
+        e.storage()
+            .instance()
+            .set(&Symbol::new(&e, "Silent"), &silent);
+    }
+
+    pub fn calls(e: Env) -> u32 {
+        e.storage()
+            .instance()
+            .get(&Symbol::new(&e, "Calls"))
+            .unwrap_or(0)
+    }
+
+    pub fn last_submit(e: Env) -> Option<SubmitCall> {
+        e.storage().instance().get(&Symbol::new(&e, "Last"))
+    }
+
+    pub fn on_submit(
+        e: Env,
+        from: Address,
+        spender: Address,
+        to: Address,
+        requests: Vec<Request>,
+        reserves: Vec<Reserve>,
+        positions: Positions,
+    ) {
+        if e.storage()
+            .instance()
+            .get::<Symbol, bool>(&Symbol::new(&e, "Reject"))
+            .unwrap_or(false)
+        {
+            panic_with_error!(&e, PoolError::BadRequest);
+        }
+        if e.storage()
+            .instance()
+            .get::<Symbol, bool>(&Symbol::new(&e, "Silent"))
+            .unwrap_or(false)
+        {
+            return;
+        }
+        let calls: u32 = e
+            .storage()
+            .instance()
+            .get(&Symbol::new(&e, "Calls"))
+            .unwrap_or(0);
+        e.storage()
+            .instance()
+            .set(&Symbol::new(&e, "Calls"), &(calls + 1));
+        e.storage().instance().set(
+            &Symbol::new(&e, "Last"),
+            &SubmitCall {
+                from,
+                spender,
+                to,
+                requests,
+                reserves,
+                positions,
+            },
+        );
+    }
+}
+
+/// Deploy a mock hook and set it as the pool's hook
+pub(crate) fn create_mock_hook<'a>(
     e: &Env,
-    admin: &Address,
-    blnd_token: &Address,
-    usdc_token: &Address,
-) -> (Address, comet::Client<'a>) {
-    let contract_address = Address::generate(e);
-    e.register_at(&contract_address, comet::WASM, ());
-    let client = comet::Client::new(e, &contract_address);
-
-    let blnd_client = MockTokenClient::new(e, blnd_token);
-    let usdc_client = MockTokenClient::new(e, usdc_token);
-    blnd_client.mint(&admin, &1_000_0000000);
-    usdc_client.mint(&admin, &25_0000000);
-
-    client.init(
-        admin,
-        &vec![e, blnd_token.clone(), usdc_token.clone()],
-        &vec![e, 0_8000000, 0_2000000],
-        &vec![e, 1_000_0000000, 25_0000000],
-        &0_0030000,
-    );
-
-    (contract_address, client)
+    pool_address: &Address,
+) -> (Address, MockPoolHookClient<'a>) {
+    let hook_id = e.register(MockPoolHook {}, ());
+    e.as_contract(pool_address, || {
+        storage::set_hook(e, &Some(hook_id.clone()));
+    });
+    (hook_id.clone(), MockPoolHookClient::new(e, &hook_id))
 }
 
 //***** Flash Loan *****

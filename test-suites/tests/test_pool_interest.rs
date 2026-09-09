@@ -63,14 +63,8 @@ fn test_pool_interest() {
     fixture.create_pool_reserve(0, TokenIndex::STABLE, &stable_config);
 
     // setup backstop and update pool status
-    fixture.tokens[TokenIndex::BLND].mint(&whale, &(500_100 * SCALAR_7));
-    fixture.tokens[TokenIndex::USDC].mint(&whale, &(12_600 * SCALAR_7));
-    fixture.lp.join_pool(
-        &(50_000 * SCALAR_7),
-        &vec![&fixture.env, 500_100 * SCALAR_7, 12_600 * SCALAR_7],
-        &whale,
-    );
-    fixture
+    fixture.tokens[TokenIndex::USDC].mint(&whale, &(50_000 * SCALAR_7));
+    fixture.pools[0]
         .backstop
         .deposit(&whale, &pool_client.address, &(50_000 * SCALAR_7));
     pool_client.set_status(&0);

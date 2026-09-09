@@ -1,10 +1,9 @@
 use crate::{
     auctions::{self, AuctionData},
-    emissions::{self, ReserveEmissionMetadata},
     events::PoolEvents,
     pool::{self, FlashLoan, Positions, Request, Reserve},
     storage::{self, ReserveConfig},
-    PoolConfig, PoolError, ReserveEmissionData, UserEmissionData,
+    PoolConfig, PoolError,
 };
 use soroban_sdk::{
     contract, contractclient, contractimpl, panic_with_error, Address, Env, String, Vec,
@@ -83,6 +82,16 @@ pub trait Pool {
     /// Fetch the admin address of the pool
     fn get_admin(e: Env) -> Address;
 
+    /// Fetch the address of the pool's backstop
+    fn get_backstop(e: Env) -> Address;
+
+    /// Fetch the backstop tokens required for the pool to activate (backstop token decimals).
+    /// 0 means the pool has no backstop requirement.
+    fn get_min_backstop(e: Env) -> i128;
+
+    /// Fetch the hook the pool calls after every submit with an entry, if any
+    fn get_hook(e: Env) -> Option<Address>;
+
     /// Fetch the a vec addresses of all reserves in the pool. The index of the reserve
     /// in this vec defines the index of the reserve in the pool, used in places like `Positions`.
     fn get_reserve_list(e: Env) -> Vec<Address>;
@@ -102,6 +111,10 @@ pub trait Pool {
 
     /// Submit a set of requests to the pool where `from` takes on the position, `spender` sends any
     /// required tokens to the pool and `to` receives any tokens sent from the pool.
+    ///
+    /// If the pool has a hook and the requests contain an entry (Supply, SupplyCollateral, Borrow
+    /// or an auction fill), the hook's `on_submit` is called once after the batch is applied and
+    /// can reject it. Batches of exits only are never hooked.
     ///
     /// Returns the new positions for `from`
     ///
@@ -207,61 +220,6 @@ pub trait Pool {
     /// Returns the amount of tokens gulped
     fn gulp(e: Env, asset: Address) -> i128;
 
-    /********* Emission Functions **********/
-
-    /// Consume emissions from the backstop and distribute to the reserves based
-    /// on the reserve emission configuration.
-    ///
-    /// Returns amount of new tokens emitted
-    fn gulp_emissions(e: Env) -> i128;
-
-    /// (Admin only) Set the emission configuration for the pool
-    ///
-    /// Changes will be applied in the next pool `update_emissions`, and affect the next emission cycle
-    ///
-    /// ### Arguments
-    /// * `res_emission_metadata` - A vector of ReserveEmissionMetadata to update metadata to
-    ///
-    /// ### Panics
-    /// * If the caller is not the admin
-    fn set_emissions_config(e: Env, res_emission_metadata: Vec<ReserveEmissionMetadata>);
-
-    /// Claims outstanding emissions for the caller for the given reserve's.
-    ///
-    /// A reserve token id is a unique identifier for a position in a pool.
-    /// - For a reserve's dTokens (liabilities), reserve_token_id = reserve_index * 2
-    /// - For a reserve's bTokens (supply/collateral), reserve_token_id = reserve_index * 2 + 1
-    ///
-    /// Returns the number of tokens claimed
-    ///
-    /// ### Arguments
-    /// * `from` - The address claiming
-    /// * `reserve_token_ids` - Vector of reserve token ids
-    /// * `to` - The Address to send the claimed tokens to
-    fn claim(e: Env, from: Address, reserve_token_ids: Vec<u32>, to: Address) -> i128;
-
-    /// Get the emissions data for a reserve token
-    ///
-    /// A reserve token id is a unique identifier for a position in a pool.
-    /// - For a reserve's dTokens (liabilities), reserve_token_id = reserve_index * 2
-    /// - For a reserve's bTokens (supply/collateral), reserve_token_id = reserve_index * 2 + 1
-    ///
-    /// ### Arguments
-    /// * `reserve_token_id` - The reserve token id
-    fn get_reserve_emissions(e: Env, reserve_token_id: u32) -> Option<ReserveEmissionData>;
-
-    /// Get the emissions data for a user
-    ///
-    /// A reserve token id is a unique identifier for a position in a pool.
-    /// - For a reserve's dTokens (liabilities), reserve_token_id = reserve_index * 2
-    /// - For a reserve's bTokens (supply/collateral), reserve_token_id = reserve_index * 2 + 1
-    ///
-    /// ### Arguments
-    /// * `user` - The address of the user
-    /// * `reserve_token_id` - The reserve token id
-    fn get_user_emissions(e: Env, user: Address, reserve_token_id: u32)
-        -> Option<UserEmissionData>;
-
     /***** Auction / Liquidation Functions *****/
 
     /// Create a new auction. Auctions are used to process liquidations, bad debt, and interest.
@@ -335,8 +293,9 @@ impl PoolContract {
     /// * `min_collateral` - The minimum collateral required to open a borrow position in the oracles base asset
     ///
     /// Pool Factory supplied:
+    /// * `min_backstop` - The backstop tokens required for the pool to activate (backstop token decimals). 0 for no requirement.
     /// * `backstop_id` - The contract address of the pool's backstop module
-    /// * `blnd_id` - The contract ID of the BLND token
+    /// * `hook` - The contract address of the hook called after every submit with an entry, if any
     pub fn __constructor(
         e: Env,
         admin: Address,
@@ -345,8 +304,9 @@ impl PoolContract {
         bstop_rate: u32,
         max_positions: u32,
         min_collateral: i128,
+        min_backstop: i128,
         backstop_id: Address,
-        blnd_id: Address,
+        hook: Option<Address>,
     ) {
         admin.require_auth();
 
@@ -358,8 +318,9 @@ impl PoolContract {
             &bstop_rate,
             &max_positions,
             &min_collateral,
+            &min_backstop,
             &backstop_id,
-            &blnd_id,
+            &hook,
         );
     }
 }
@@ -434,6 +395,18 @@ impl Pool for PoolContract {
 
     fn get_admin(e: Env) -> Address {
         storage::get_admin(&e)
+    }
+
+    fn get_backstop(e: Env) -> Address {
+        storage::get_backstop(&e)
+    }
+
+    fn get_min_backstop(e: Env) -> i128 {
+        storage::get_min_backstop(&e)
+    }
+
+    fn get_hook(e: Env) -> Option<Address> {
+        storage::get_hook(&e)
     }
 
     fn get_reserve_list(e: Env) -> Vec<Address> {
@@ -516,47 +489,6 @@ impl Pool for PoolContract {
 
         PoolEvents::gulp(&e, asset, token_delta);
         token_delta
-    }
-
-    /********* Emission Functions **********/
-
-    fn gulp_emissions(e: Env) -> i128 {
-        storage::extend_instance(&e);
-        let emissions = emissions::gulp_emissions(&e);
-
-        PoolEvents::gulp_emissions(&e, emissions);
-        emissions
-    }
-
-    fn set_emissions_config(e: Env, res_emission_metadata: Vec<ReserveEmissionMetadata>) {
-        storage::extend_instance(&e);
-        let admin = storage::get_admin(&e);
-        admin.require_auth();
-
-        emissions::set_pool_emissions(&e, res_emission_metadata);
-    }
-
-    fn claim(e: Env, from: Address, reserve_token_ids: Vec<u32>, to: Address) -> i128 {
-        storage::extend_instance(&e);
-        from.require_auth();
-
-        let amount_claimed = emissions::execute_claim(&e, &from, &reserve_token_ids, &to);
-
-        PoolEvents::claim(&e, from, reserve_token_ids, amount_claimed);
-
-        amount_claimed
-    }
-
-    fn get_reserve_emissions(e: Env, reserve_token_index: u32) -> Option<ReserveEmissionData> {
-        storage::get_res_emis_data(&e, &reserve_token_index)
-    }
-
-    fn get_user_emissions(
-        e: Env,
-        user: Address,
-        reserve_token_index: u32,
-    ) -> Option<UserEmissionData> {
-        storage::get_user_emissions(&e, &user, &reserve_token_index)
     }
 
     /***** Auction / Liquidation Functions *****/

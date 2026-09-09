@@ -9,8 +9,8 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-soroban-fixed-point-math = "1.3.0"
-soroban-sdk = { version = "22.0.4", features = ["testutils"] }
+soroban-fixed-point-math = { git = "https://github.com/Robeartt/soroban-fixed-point-math", branch = "sdk-27" }
+soroban-sdk = { version = "=27.0.3", features = ["testutils"] }
 extension-trait = "1"
 
 [dependencies.test-suites]

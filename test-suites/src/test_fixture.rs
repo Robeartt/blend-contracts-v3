@@ -1,24 +1,31 @@
 use std::collections::HashMap;
 use std::ops::Index;
 
-use crate::backstop::create_backstop;
-use crate::emitter::create_emitter;
-use crate::liquidity_pool::{create_lp_pool, LPClient};
+use crate::backstop::BACKSTOP_WASM;
 use crate::oracle::create_mock_oracle;
 use crate::pool::POOL_WASM;
 use crate::pool_factory::create_pool_factory;
 use crate::token::{create_stellar_token, create_token};
 use backstop::BackstopClient;
-use blend_contract_sdk::emitter::Client as EmitterClient;
-use pool::{PoolClient, PoolConfig, PoolDataKey, ReserveConfig, ReserveData, ReserveEmissionData};
-use pool_factory::{PoolFactoryClient, PoolInitMeta};
+use pool::{PoolClient, PoolConfig, PoolDataKey, ReserveConfig, ReserveData};
+use pool_factory::{BackstopInit, PoolFactoryClient, PoolInitMeta};
 use sep_40_oracle::testutils::{Asset, MockPriceOracleClient};
 use sep_41_token::testutils::MockTokenClient;
 use soroban_sdk::testutils::{Address as _, BytesN as _, EnvTestConfig, Ledger, LedgerInfo};
-use soroban_sdk::{vec as svec, Address, BytesN, Env, Map, String, Symbol};
+use soroban_sdk::{vec as svec, Address, BytesN, Env, String, Symbol};
+use treasury::{TreasuryContract, TreasuryContractClient};
 
 pub const SCALAR_7: i128 = 1_000_0000;
 pub const SCALAR_12: i128 = 1_000_000_000_000;
+
+/// The protocol version every test ledger runs at
+pub const PROTOCOL_VERSION: u32 = 27;
+
+/// The backstop deposit, in USDC, a pool created with `create_pool` needs to activate
+pub const DEFAULT_MIN_BACKSTOP: i128 = 50_000 * SCALAR_7;
+
+/// The share of interest auction payouts the fixture's treasury takes (7 decimals)
+pub const DEFAULT_PROTOCOL_RATE: u32 = 0_1000000;
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum TokenIndex {
@@ -31,6 +38,7 @@ pub enum TokenIndex {
 
 pub struct PoolFixture<'a> {
     pub pool: PoolClient<'a>,
+    pub backstop: BackstopClient<'a>,
     pub reserves: HashMap<TokenIndex, u32>,
 }
 
@@ -46,11 +54,9 @@ pub struct TestFixture<'a> {
     pub env: Env,
     pub bombadil: Address,
     pub users: Vec<Address>,
-    pub emitter: EmitterClient<'a>,
-    pub backstop: BackstopClient<'a>,
     pub pool_factory: PoolFactoryClient<'a>,
+    pub treasury: TreasuryContractClient<'a>,
     pub oracle: MockPriceOracleClient<'a>,
-    pub lp: LPClient<'a>,
     pub pools: Vec<PoolFixture<'a>>,
     pub tokens: Vec<MockTokenClient<'a>>,
 }
@@ -58,8 +64,9 @@ pub struct TestFixture<'a> {
 impl TestFixture<'_> {
     /// Create a new TestFixture for the Blend Protocol
     ///
-    /// Deploys BLND (0), USDC (1), wETH (2), XLM (3), and STABLE (4) test tokens, alongside all required
-    /// Blend Protocol contracts, including a BLND-USDC LP.
+    /// Deploys BLND (0), USDC (1), wETH (2), XLM (3), and STABLE (4) test tokens, alongside the
+    /// treasury (owned by bombadil, taking `DEFAULT_PROTOCOL_RATE`) and the pool factory. Pools
+    /// created with `create_pool` get a USDC backstop.
     pub fn create<'a>(wasm: bool) -> TestFixture<'a> {
         let e = Env::new_with_config(EnvTestConfig {
             capture_snapshot_at_drop: false,
@@ -72,7 +79,7 @@ impl TestFixture<'_> {
 
         e.ledger().set(LedgerInfo {
             timestamp: 1441065600, // Sept 1st, 2015 (backstop epoch)
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 150,
             network_id: Default::default(),
             base_reserve: 10,
@@ -88,45 +95,20 @@ impl TestFixture<'_> {
         let (xlm_id, xlm_client) = create_stellar_token(&e, &bombadil);
         let (stable_id, stable_client) = create_token(&e, &bombadil, 6, "STABLE");
 
-        // deploy external contracts
-        let (lp, lp_client) = create_lp_pool(&e, &bombadil, &blnd_id, &usdc_id);
+        // deploy the treasury
+        let treasury_id = e.register(TreasuryContract {}, (&bombadil, DEFAULT_PROTOCOL_RATE));
+        let treasury_client = TreasuryContractClient::new(&e, &treasury_id);
 
-        // generate Blend Protocol contract IDs
-        let backstop_id = Address::generate(&e);
+        // deploy the pool factory
         let pool_factory_id = Address::generate(&e);
-
-        let (emitter_id, emitter_client) = create_emitter(&e);
-        blnd_client.set_admin(&emitter_id);
-        emitter_client.initialize(&blnd_id, &backstop_id, &lp);
-
-        let backstop_client = create_backstop(
-            &e,
-            &backstop_id,
-            wasm,
-            &lp,
-            &emitter_id,
-            &blnd_id,
-            &usdc_id,
-            &pool_factory_id,
-            &svec![
-                &e,
-                (bombadil.clone(), 10_000_000 * SCALAR_7),
-                (frodo.clone(), 30_000_000 * SCALAR_7)
-            ],
-        );
         let pool_hash = e.deployer().upload_contract_wasm(POOL_WASM);
+        let backstop_hash = e.deployer().upload_contract_wasm(BACKSTOP_WASM);
         let pool_init_meta = PoolInitMeta {
-            backstop: backstop_id.clone(),
-            pool_hash: pool_hash.clone(),
-            blnd_id: blnd_id.clone(),
+            pool_hash,
+            backstop_hash,
+            treasury: treasury_id,
         };
         let pool_factory_client = create_pool_factory(&e, &pool_factory_id, wasm, pool_init_meta);
-
-        // drop tokens to bombadil
-        backstop_client.drop();
-
-        // start distribution period
-        backstop_client.distribute();
 
         // initialize oracle
         let (_, mock_oracle_client) = create_mock_oracle(&e);
@@ -155,11 +137,9 @@ impl TestFixture<'_> {
             env: e,
             bombadil,
             users: vec![frodo],
-            emitter: emitter_client,
-            backstop: backstop_client,
             pool_factory: pool_factory_client,
+            treasury: treasury_client,
             oracle: mock_oracle_client,
-            lp: lp_client,
             pools: vec![],
             tokens: vec![
                 blnd_client,
@@ -173,6 +153,7 @@ impl TestFixture<'_> {
         fixture
     }
 
+    /// Create a pool with a USDC backstop that needs `DEFAULT_MIN_BACKSTOP` to activate
     pub fn create_pool(
         &mut self,
         name: String,
@@ -180,6 +161,50 @@ impl TestFixture<'_> {
         max_positions: u32,
         min_collateral: i128,
     ) {
+        self.create_pool_with_backstop(
+            name,
+            backstop_take_rate,
+            max_positions,
+            min_collateral,
+            DEFAULT_MIN_BACKSTOP,
+        );
+    }
+
+    /// Create a pool with a USDC backstop that needs `min_backstop` USDC to activate
+    pub fn create_pool_with_backstop(
+        &mut self,
+        name: String,
+        backstop_take_rate: u32,
+        max_positions: u32,
+        min_collateral: i128,
+        min_backstop: i128,
+    ) {
+        self.create_pool_with_hook(
+            name,
+            backstop_take_rate,
+            max_positions,
+            min_collateral,
+            min_backstop,
+            None,
+        );
+    }
+
+    /// Create a pool with a USDC backstop that needs `min_backstop` USDC to activate, calling `hook`
+    pub fn create_pool_with_hook(
+        &mut self,
+        name: String,
+        backstop_take_rate: u32,
+        max_positions: u32,
+        min_collateral: i128,
+        min_backstop: i128,
+        hook: Option<Address>,
+    ) {
+        let backstop_init = BackstopInit {
+            backstop_token: self.tokens[TokenIndex::USDC].address.clone(),
+            decimals_offset: 0,
+            name: String::from_str(&self.env, "Backstop Share"),
+            symbol: String::from_str(&self.env, "BSS"),
+        };
         let pool_id = self.pool_factory.deploy(
             &self.bombadil,
             &name,
@@ -188,9 +213,15 @@ impl TestFixture<'_> {
             &backstop_take_rate,
             &max_positions,
             &min_collateral,
+            &min_backstop,
+            &backstop_init,
+            &hook,
         );
+        let pool = PoolClient::new(&self.env, &pool_id);
+        let backstop = BackstopClient::new(&self.env, &pool.get_backstop());
         self.pools.push(PoolFixture {
-            pool: PoolClient::new(&self.env, &pool_id),
+            pool,
+            backstop,
             reserves: HashMap::new(),
         });
     }
@@ -224,17 +255,6 @@ impl TestFixture<'_> {
         })
     }
 
-    pub fn read_pool_emissions(&self, pool_index: usize) -> Map<u32, u64> {
-        let pool_fixture = &self.pools[pool_index];
-        self.env.as_contract(&pool_fixture.pool.address, || {
-            self.env
-                .storage()
-                .persistent()
-                .get(&Symbol::new(&self.env, "PoolEmis"))
-                .unwrap()
-        })
-    }
-
     pub fn read_reserve_config(&self, pool_index: usize, asset_index: TokenIndex) -> ReserveConfig {
         let pool_fixture = &self.pools[pool_index];
         let token = &self.tokens[asset_index];
@@ -261,32 +281,12 @@ impl TestFixture<'_> {
         })
     }
 
-    pub fn read_reserve_emissions(
-        &self,
-        pool_index: usize,
-        asset_index: TokenIndex,
-        token_type: u32,
-    ) -> ReserveEmissionData {
-        let pool_fixture = &self.pools[pool_index];
-        let reserve_index = pool_fixture.reserves.get(&asset_index).unwrap();
-        let res_emis_index = reserve_index * 2 + token_type;
-        self.env.as_contract(&pool_fixture.pool.address, || {
-            let emis_data = self
-                .env
-                .storage()
-                .persistent()
-                .get(&PoolDataKey::EmisData(res_emis_index))
-                .unwrap();
-            emis_data
-        })
-    }
-
     /********** Chain Helpers ***********/
 
     pub fn jump(&self, time: u64) {
         self.env.ledger().set(LedgerInfo {
             timestamp: self.env.ledger().timestamp().saturating_add(time),
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: self.env.ledger().sequence(),
             network_id: Default::default(),
             base_reserve: 10,
@@ -300,7 +300,7 @@ impl TestFixture<'_> {
         let blocks = time / 5;
         self.env.ledger().set(LedgerInfo {
             timestamp: self.env.ledger().timestamp().saturating_add(time),
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: self.env.ledger().sequence().saturating_add(blocks as u32),
             network_id: Default::default(),
             base_reserve: 10,

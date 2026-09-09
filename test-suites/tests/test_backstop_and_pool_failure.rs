@@ -28,9 +28,7 @@ fn test_backstop_and_pool_failure() {
     let elrond = Address::generate(&fixture.env);
 
     /*
-     * Backstop starts with 50,000 LP tokens, worth about
-     * 12500 USDC and 500k BLND, or about 62,500 USDC total
-     * at the setup LP weights.
+     * The backstop starts with 50,000 USDC.
      *
      * Frodo positions:
      * - STABLE 10,000 / 8,000
@@ -192,7 +190,9 @@ fn test_backstop_and_pool_failure() {
     let sam_position_post = pool_fixture.pool.get_positions(&sam);
     assert_eq!(sam_position_post.collateral.len(), 0);
     assert_eq!(sam_position_post.liabilities.len(), 0);
-    let backstop_post_liq_1 = pool_fixture.pool.get_positions(&fixture.backstop.address);
+    let backstop_post_liq_1 = pool_fixture
+        .pool
+        .get_positions(&pool_fixture.backstop.address);
     assert_eq!(backstop_post_liq_1.collateral.len(), 0);
     assert_eq!(backstop_post_liq_1.liabilities.len(), 1);
     let bad_debt_1 = backstop_post_liq_1
@@ -202,15 +202,16 @@ fn test_backstop_and_pool_failure() {
     assert_approx_eq_rel(bad_debt_1, 60_000 * stable_scalar, 0_001000);
 
     // create bad debt auction to empty the backstop
-    let pool_backstop_data = fixture.backstop.pool_data(&pool_fixture.pool.address);
+    let pool_backstop_data = pool_fixture.backstop.pool_data(&pool_fixture.pool.address);
     assert!(pool_backstop_data.tokens > 0);
     assert!(pool_backstop_data.shares > 0);
 
+    let usdc = &fixture.tokens[TokenIndex::USDC];
     let bad_debt_auction = pool_fixture.pool.new_auction(
         &1,
-        &fixture.backstop.address,
+        &pool_fixture.backstop.address,
         &vec![&fixture.env, stable.address.clone()],
-        &vec![&fixture.env, fixture.lp.address.clone()],
+        &vec![&fixture.env, usdc.address.clone()],
         &100,
     );
     assert_eq!(bad_debt_auction.bid.len(), 1);
@@ -220,9 +221,7 @@ fn test_backstop_and_pool_failure() {
     );
     assert_eq!(bad_debt_auction.lot.len(), 1);
     assert_eq!(
-        bad_debt_auction
-            .lot
-            .get_unchecked(fixture.lp.address.clone()),
+        bad_debt_auction.lot.get_unchecked(usdc.address.clone()),
         pool_backstop_data.tokens
     );
 
@@ -238,7 +237,7 @@ fn test_backstop_and_pool_failure() {
             &fixture.env,
             Request {
                 request_type: RequestType::FillBadDebtAuction as u32,
-                address: fixture.backstop.address.clone(),
+                address: pool_fixture.backstop.address.clone(),
                 amount: 100,
             },
             Request {
@@ -249,9 +248,10 @@ fn test_backstop_and_pool_failure() {
         ],
     );
 
-    let pool_backstop_data = fixture.backstop.pool_data(&pool_fixture.pool.address);
+    let pool_backstop_data = pool_fixture.backstop.pool_data(&pool_fixture.pool.address);
     assert_eq!(pool_backstop_data.tokens, 0);
     assert!(pool_backstop_data.shares > 0);
+    assert_eq!(usdc.balance(&elrond), 50_000 * SCALAR_7);
 
     // ***** Liquidate Pippin and auction off the bad debt *****
 
@@ -312,7 +312,9 @@ fn test_backstop_and_pool_failure() {
     let pippin_position_post = pool_fixture.pool.get_positions(&pippin);
     assert_eq!(pippin_position_post.collateral.len(), 0);
     assert_eq!(pippin_position_post.liabilities.len(), 0);
-    let backstop_post_liq_2 = pool_fixture.pool.get_positions(&fixture.backstop.address);
+    let backstop_post_liq_2 = pool_fixture
+        .pool
+        .get_positions(&pool_fixture.backstop.address);
     assert_eq!(backstop_post_liq_2.collateral.len(), 0);
     assert_eq!(backstop_post_liq_2.liabilities.len(), 1);
     let bad_debt_2 = backstop_post_liq_2
@@ -322,7 +324,7 @@ fn test_backstop_and_pool_failure() {
     assert_approx_eq_rel(bad_debt_2, 60_000 * stable_scalar, 0_001000);
 
     // default the bad debt
-    pool_fixture.pool.bad_debt(&fixture.backstop.address);
+    pool_fixture.pool.bad_debt(&pool_fixture.backstop.address);
 
     // check b_rate loss (7 decimals)
     let post_stable_reserve = pool_fixture.pool.get_reserve(&stable.address);

@@ -3,17 +3,20 @@
 #[cfg(any(test, feature = "testutils"))]
 extern crate std;
 
-mod backstop;
 mod constants;
 mod contract;
 mod dependencies;
-mod emissions;
 mod errors;
 mod events;
+mod hooks;
+mod queue;
 mod storage;
+mod test_backstop;
 mod testutils;
 
-pub use backstop::{PoolBackstopData, PoolBalance, UserBalance, Q4W};
+pub use contract::BackstopContractClient as BackstopClient;
 pub use contract::*;
 pub use errors::BackstopError;
-pub use storage::{BackstopDataKey, BackstopEmissionData, PoolUserKey, UserEmissionData};
+pub use hooks::{BackstopHook, BackstopHookClient};
+pub use queue::Q4W;
+pub use storage::BackstopDataKey;

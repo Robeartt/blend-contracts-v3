@@ -1,21 +1,84 @@
+use soroban_fixed_point_math::FixedPoint;
+use soroban_sdk::{
+    contract, contractimpl, contracttype, panic_with_error, token, unwrap::UnwrapOptimized,
+    Address, Env, MuxedAddress, String, Vec,
+};
+use stellar_tokens::{
+    fungible::{Base, ContractOverrides, FungibleToken},
+    vault::Vault,
+};
+
 use crate::{
-    backstop::{self, load_pool_backstop_data, PoolBackstopData, UserBalance, Q4W},
-    constants::{MAX_BACKFILLED_EMISSIONS, SCALAR_7},
-    dependencies::EmitterClient,
-    emissions,
+    constants::{MAX_PROTOCOL_RATE, SCALAR_7},
+    dependencies::{PoolClient, TreasuryClient},
     errors::BackstopError,
     events::BackstopEvents,
+    hooks::BackstopHookClient,
+    queue::{self, Q4W},
     storage,
 };
-use soroban_sdk::{contract, contractclient, contractimpl, panic_with_error, Address, Env, Vec};
+
+/// The pool's backstop data
+#[derive(Clone)]
+#[contracttype]
+pub struct PoolBackstopData {
+    pub tokens: i128,  // the number of backstop tokens held in the pool's backstop
+    pub shares: i128,  // the number of shares the pool's backstop has issued
+    pub q4w_pct: i128, // the percentage of shares/tokens queued for withdrawal
+}
+
+/// A user's backstop balance
+#[derive(Clone)]
+#[contracttype]
+pub struct UserBalance {
+    pub shares: i128,  // the balance of shares the user owns, excludes Q4W
+    pub q4w: Vec<Q4W>, // a list of queued withdrawals
+}
 
 /// ### Backstop
 ///
-/// A backstop module for the Blend protocol's Isolated Lending Pools
+/// A backstop module for one Blend Isolated Lending Pool.
+///
+/// Keeps the Blend v2 backstop's interface, reduced to a single pool: every `pool_address`
+/// argument must be the pool this backstop was deployed for. Shares are an ERC-4626 share
+/// token over the backstop token (OpenZeppelin `stellar-tokens`), so they are transferable
+/// and priced with a virtual offset. Exiting takes v2's two steps: `queue_withdrawal` moves
+/// shares into escrow held by the backstop for the lock time, after which `withdraw` burns the
+/// escrowed shares for backstop tokens. Only the pool can `draw`.
 #[contract]
 pub struct BackstopContract;
 
-#[contractclient(name = "BackstopClient")]
+#[contractimpl]
+impl BackstopContract {
+    /// Construct the backstop contract
+    ///
+    /// ### Arguments
+    /// * `pool` - The pool this backstop serves, the only address allowed to `draw`
+    /// * `backstop_token` - The backstop token
+    /// * `treasury` - The treasury that takes the protocol's share of donations
+    /// * `decimals_offset` - Extra decimals on shares over the backstop token (ERC-4626 virtual offset)
+    /// * `name` - The share token name
+    /// * `symbol` - The share token symbol
+    /// * `hook` - The hook called after every deposit, if any
+    pub fn __constructor(
+        e: &Env,
+        pool: Address,
+        backstop_token: Address,
+        treasury: Address,
+        decimals_offset: u32,
+        name: String,
+        symbol: String,
+        hook: Option<Address>,
+    ) {
+        storage::set_pool(e, &pool);
+        storage::set_treasury(e, &treasury);
+        storage::set_hook(e, &hook);
+        Vault::set_asset(e, backstop_token);
+        Vault::set_decimals_offset(e, decimals_offset);
+        Base::set_metadata(e, Vault::decimals(e), name, symbol);
+    }
+}
+
 pub trait Backstop {
     /********** Core **********/
 
@@ -27,6 +90,9 @@ pub trait Backstop {
     /// * `from` - The address depositing into the backstop
     /// * `pool_address` - The address of the pool
     /// * `amount` - The amount of tokens to deposit
+    ///
+    /// ### Errors
+    /// If `pool_address` is not the backstop's pool, or if the deposit mints no shares
     fn deposit(e: Env, from: Address, pool_address: Address, amount: i128) -> i128;
 
     /// Queue deposited pool shares from `from` for withdraw from a backstop of a pool
@@ -55,12 +121,16 @@ pub trait Backstop {
     /// * `from` - The address whose shares are being withdrawn
     /// * `pool_address` - The address of the pool
     /// * `amount` - The amount of shares to withdraw
+    ///
+    /// ### Errors
+    /// If the pool has assigned bad debt to the backstop, if the shares are not unlocked, or
+    /// if the shares are worth no tokens
     fn withdraw(e: Env, from: Address, pool_address: Address, amount: i128) -> i128;
 
     /// Fetch the balance of backstop shares of a pool for the user
     ///
     /// ### Arguments
-    /// * `pool_address` - The address of the pool
+    /// * `pool` - The address of the pool
     /// * `user` - The user to fetch the balance for
     fn user_balance(e: Env, pool: Address, user: Address) -> UserBalance;
 
@@ -69,74 +139,26 @@ pub trait Backstop {
     /// Return a summary of the pool's backstop data
     ///
     /// ### Arguments
-    /// * `pool_address` - The address of the pool
+    /// * `pool` - The address of the pool
     fn pool_data(e: Env, pool: Address) -> PoolBackstopData;
 
     /// Fetch the backstop token for the backstop
     fn backstop_token(e: Env) -> Address;
 
-    /// Fetch the reward zone for the backstop
-    fn reward_zone(e: Env) -> Vec<Address>;
+    /// Fetch the pool this backstop serves
+    fn pool(e: Env) -> Address;
 
-    /********** Emissions **********/
+    /// Fetch the hook called after deposits, if any
+    fn hook(e: Env) -> Option<Address>;
 
-    /// Update the backstop with new emissions for all reward zone pools
-    ///
-    /// Returns the amount of new emissions for all reward zone pools
-    fn distribute(e: Env) -> i128;
-
-    /// Distribute emissions to a reward zone pool and its backstop
-    ///
-    /// Returns the amount of BLND emissions distributed to the pool
-    ///
-    /// ### Arguments
-    /// * `pool` - The address of the pool to distribute emissions to
-    ///
-    /// ### Errors
-    /// If the pool is not in the reward zone or the pool does not authorize the call
-    fn gulp_emissions(e: Env, pool: Address) -> i128;
-
-    /// Add a pool to the reward zone, and if the reward zone is full, a pool to remove
-    ///
-    /// ### Arguments
-    /// * `to_add` - The address of the pool to add
-    /// * `to_remove` - The address of the pool to remove (Optional - Used if the reward zone is full)
-    ///
-    /// ### Errors
-    /// If the pool to remove has more tokens, or if distribute has not occured in the last hour
-    fn add_reward(e: Env, to_add: Address, to_remove: Option<Address>);
-
-    /// Remove a pool from the reward zone
-    ///
-    /// ### Arguments
-    /// * `to_remove` - The address of the pool to remove
-    ///
-    /// ### Errors
-    /// If the pool is not below the threshold or if the pool is not in the reward zone
-    fn remove_reward(e: Env, to_remove: Address);
-
-    /// Claim backstop deposit emissions from a list of pools for `from`
-    ///
-    /// Returns the amount of LP tokens minted
-    ///
-    /// ### Arguments
-    /// * `from` - The address of the user claiming emissions
-    /// * `pool_addresses` - The Vec of addresses to claim backstop deposit emissions from
-    /// * `min_lp_tokens_out` - The minimum amount of LP tokens to mint with the claimed BLND
-    ///
-    /// ### Errors
-    /// If an invalid pool address is included
-    fn claim(e: Env, from: Address, pool_addresses: Vec<Address>, min_lp_tokens_out: i128) -> i128;
-
-    /// Drop initial BLND to a list of addresses through the emitter
-    fn drop(e: Env);
+    /// Fetch the treasury that takes the protocol's share of donations
+    fn treasury(e: Env) -> Address;
 
     /********** Fund Management *********/
 
     /// (Only Pool) Take backstop token from a pools backstop
     ///
     /// ### Arguments
-    /// * `from` - The address of the pool drawing tokens from the backstop
     /// * `pool_address` - The address of the pool
     /// * `amount` - The amount of backstop tokens to draw
     /// * `to` - The address to send the backstop tokens to
@@ -150,56 +172,25 @@ pub trait Backstop {
     ///
     /// NOTE: This is not a deposit, and `from` will permanently lose access to the funds
     ///
+    /// The treasury takes its share first: `amount` times the rate the treasury reports, capped
+    /// at `MAX_PROTOCOL_RATE`, goes from `from` to the treasury and the rest from `from` to the
+    /// backstop. The tokens are moved with `transfer` from `from`, so `from`'s authorization of
+    /// the call must cover the nested token transfers; no allowance to the backstop is needed.
+    ///
     /// ### Arguments
-    /// * `from` - The address of the pool donating tokens to the backstop
+    /// * `from` - The address donating tokens to the backstop
     /// * `pool_address` - The address of the pool
-    /// * `amount` - The amount of BLND to add
+    /// * `amount` - The amount of backstop tokens to add
     ///
     /// ### Errors
-    /// If the `pool_address` is not valid, backstop does not have sufficient allowance from `from`, or if the pool does not
-    /// authorize the call
+    /// If the `pool_address` is not valid, or if the pool does not authorize the call
     fn donate(e: Env, from: Address, pool_address: Address, amount: i128);
 }
 
-#[contractimpl]
-impl BackstopContract {
-    /// Construct the backstop contract
-    ///
-    /// ### Arguments
-    /// * `backstop_token` - The backstop token ID - an LP token with the pair BLND:USDC
-    /// * `emitter` - The Emitter contract ID
-    /// * `blnd_token` - The BLND token ID
-    /// * `usdc_token` - The USDC token ID
-    /// * `pool_factory` - The pool factory ID
-    /// * `drop_list` - The list of addresses to distribute initial BLND to and the percent of the distribution they should receive
-    pub fn __constructor(
-        e: Env,
-        backstop_token: Address,
-        emitter: Address,
-        blnd_token: Address,
-        usdc_token: Address,
-        pool_factory: Address,
-        drop_list: Vec<(Address, i128)>,
-    ) {
-        storage::set_backstop_token(&e, &backstop_token);
-        storage::set_blnd_token(&e, &blnd_token);
-        storage::set_usdc_token(&e, &usdc_token);
-        storage::set_pool_factory(&e, &pool_factory);
-        let mut drop_total: i128 = 0;
-        for (_, amount) in drop_list.iter() {
-            drop_total += amount;
-        }
-        if drop_total + MAX_BACKFILLED_EMISSIONS > 50_000_000 * SCALAR_7 {
-            panic_with_error!(&e, BackstopError::BadRequest);
-        }
-        storage::set_drop_list(&e, &drop_list);
-        storage::set_emitter(&e, &emitter);
-    }
-}
-
 /// @dev
-/// The contract implementation only manages the authorization / authentication required from the caller(s), and
-/// utilizes other modules to carry out contract functionality.
+/// The contract implementation only manages the authorization / authentication required from the
+/// caller(s) and the withdrawal queue, and utilizes the OpenZeppelin vault module to carry out the
+/// share accounting.
 #[contractimpl]
 impl Backstop for BackstopContract {
     /********** Core **********/
@@ -207,8 +198,18 @@ impl Backstop for BackstopContract {
     fn deposit(e: Env, from: Address, pool_address: Address, amount: i128) -> i128 {
         storage::extend_instance(&e);
         from.require_auth();
+        require_is_pool(&e, &pool_address);
+        require_nonnegative(&e, amount);
+        if from == pool_address || from == e.current_contract_address() {
+            panic_with_error!(&e, BackstopError::BadRequest);
+        }
 
-        let to_mint = backstop::execute_deposit(&e, &from, &pool_address, amount);
+        let to_mint = Vault::preview_deposit(&e, amount);
+        if to_mint <= 0 {
+            panic_with_error!(&e, BackstopError::InvalidShareMintAmount);
+        }
+        Vault::deposit_internal(&e, &from, amount, to_mint, &from, &from);
+        call_hook(&e, &from, amount, to_mint);
 
         BackstopEvents::deposit(&e, pool_address, from, amount, to_mint);
         to_mint
@@ -217,8 +218,18 @@ impl Backstop for BackstopContract {
     fn queue_withdrawal(e: Env, from: Address, pool_address: Address, amount: i128) -> Q4W {
         storage::extend_instance(&e);
         from.require_auth();
+        require_is_pool(&e, &pool_address);
+        require_nonnegative(&e, amount);
 
-        let to_queue = backstop::execute_queue_withdrawal(&e, &from, &pool_address, amount);
+        if Base::balance(&e, &from) < amount {
+            panic_with_error!(&e, BackstopError::BalanceError);
+        }
+        let mut q4w = storage::get_user_q4w(&e, &from);
+        let to_queue = queue::queue(&e, &mut q4w, amount);
+        storage::set_user_q4w(&e, &from, &q4w);
+
+        Base::update(&e, Some(&from), Some(&e.current_contract_address()), amount);
+        storage::set_total_q4w(&e, storage::get_total_q4w(&e) + amount);
 
         BackstopEvents::queue_withdrawal(&e, pool_address, from, amount, to_queue.exp);
         to_queue
@@ -227,8 +238,15 @@ impl Backstop for BackstopContract {
     fn dequeue_withdrawal(e: Env, from: Address, pool_address: Address, amount: i128) {
         storage::extend_instance(&e);
         from.require_auth();
+        require_is_pool(&e, &pool_address);
+        require_nonnegative(&e, amount);
 
-        backstop::execute_dequeue_withdrawal(&e, &from, &pool_address, amount);
+        let mut q4w = storage::get_user_q4w(&e, &from);
+        queue::dequeue(&e, &mut q4w, amount);
+        storage::set_user_q4w(&e, &from, &q4w);
+
+        Base::update(&e, Some(&e.current_contract_address()), Some(&from), amount);
+        storage::set_total_q4w(&e, storage::get_total_q4w(&e) - amount);
 
         BackstopEvents::dequeue_withdrawal(&e, pool_address, from, amount);
     }
@@ -236,78 +254,74 @@ impl Backstop for BackstopContract {
     fn withdraw(e: Env, from: Address, pool_address: Address, amount: i128) -> i128 {
         storage::extend_instance(&e);
         from.require_auth();
+        require_is_pool(&e, &pool_address);
+        require_nonnegative(&e, amount);
 
-        let to_withdraw = backstop::execute_withdraw(&e, &from, &pool_address, amount);
+        let pool_client = PoolClient::new(&e, &pool_address);
+        let backstop_positions = pool_client.get_positions(&e.current_contract_address());
+        if !backstop_positions.liabilities.is_empty() {
+            panic_with_error!(&e, BackstopError::BadDebtExists);
+        }
 
-        BackstopEvents::withdraw(&e, pool_address, from, amount, to_withdraw);
-        to_withdraw
+        let mut q4w = storage::get_user_q4w(&e, &from);
+        queue::consume_expired(&e, &mut q4w, amount);
+        storage::set_user_q4w(&e, &from, &q4w);
+
+        let to_return = Vault::preview_redeem(&e, amount);
+        if to_return <= 0 {
+            panic_with_error!(&e, BackstopError::InvalidTokenWithdrawAmount);
+        }
+        Base::update(&e, Some(&e.current_contract_address()), None, amount);
+        storage::set_total_q4w(&e, storage::get_total_q4w(&e) - amount);
+        token::Client::new(&e, &Vault::query_asset(&e)).transfer(
+            &e.current_contract_address(),
+            &from,
+            &to_return,
+        );
+
+        BackstopEvents::withdraw(&e, pool_address, from, amount, to_return);
+        to_return
     }
 
     fn user_balance(e: Env, pool: Address, user: Address) -> UserBalance {
-        storage::get_user_balance(&e, &pool, &user)
+        require_is_pool(&e, &pool);
+        UserBalance {
+            shares: Base::balance(&e, &user),
+            q4w: storage::get_user_q4w(&e, &user),
+        }
     }
 
     fn pool_data(e: Env, pool: Address) -> PoolBackstopData {
-        load_pool_backstop_data(&e, &pool)
+        require_is_pool(&e, &pool);
+        let shares = Base::total_supply(&e);
+        let q4w_pct = if shares > 0 {
+            storage::get_total_q4w(&e)
+                .fixed_div_ceil(shares, SCALAR_7)
+                .unwrap_optimized()
+        } else {
+            0
+        };
+        PoolBackstopData {
+            tokens: Vault::total_assets(&e),
+            shares,
+            q4w_pct,
+        }
     }
 
     fn backstop_token(e: Env) -> Address {
-        storage::get_backstop_token(&e)
+        Vault::query_asset(&e)
     }
 
-    fn reward_zone(e: Env) -> Vec<Address> {
-        storage::get_reward_zone(&e)
+    fn pool(e: Env) -> Address {
+        storage::get_pool(&e)
     }
 
-    /********** Emissions **********/
-
-    fn distribute(e: Env) -> i128 {
-        storage::extend_instance(&e);
-        let new_emissions = emissions::distribute(&e);
-
-        BackstopEvents::distribute(&e, new_emissions);
-        new_emissions
+    fn hook(e: Env) -> Option<Address> {
+        storage::get_hook(&e)
     }
 
-    fn gulp_emissions(e: Env, pool: Address) -> i128 {
-        storage::extend_instance(&e);
-        pool.require_auth();
-        let (backstop_emissions, pool_emissions) = emissions::gulp_emissions(&e, &pool);
-
-        BackstopEvents::gulp_emissions(&e, pool, backstop_emissions, pool_emissions);
-        pool_emissions
-    }
-
-    fn add_reward(e: Env, to_add: Address, to_remove: Option<Address>) {
-        storage::extend_instance(&e);
-        emissions::add_to_reward_zone(&e, to_add.clone(), to_remove.clone());
-
-        BackstopEvents::rw_zone_add(&e, to_add, to_remove);
-    }
-
-    fn remove_reward(e: Env, to_remove: Address) {
-        storage::extend_instance(&e);
-        emissions::remove_from_reward_zone(&e, to_remove.clone());
-
-        BackstopEvents::rw_zone_remove(&e, to_remove);
-    }
-
-    fn claim(e: Env, from: Address, pool_addresses: Vec<Address>, min_lp_tokens_out: i128) -> i128 {
-        storage::extend_instance(&e);
-        from.require_auth();
-
-        let amount = emissions::execute_claim(&e, &from, &pool_addresses, &min_lp_tokens_out);
-
-        BackstopEvents::claim(&e, from, amount);
-        amount
-    }
-
-    fn drop(e: Env) {
-        let mut drop_list = storage::get_drop_list(&e);
-        let backfilled_emissions = storage::get_backfill_emissions(&e);
-        drop_list.push_back((e.current_contract_address(), backfilled_emissions));
-        let emitter_client = EmitterClient::new(&e, &storage::get_emitter(&e));
-        emitter_client.drop(&drop_list)
+    fn treasury(e: Env) -> Address {
+        storage::get_treasury(&e)
     }
 
     /********** Fund Management *********/
@@ -315,8 +329,17 @@ impl Backstop for BackstopContract {
     fn draw(e: Env, pool_address: Address, amount: i128, to: Address) {
         storage::extend_instance(&e);
         pool_address.require_auth();
+        require_is_pool(&e, &pool_address);
+        require_nonnegative(&e, amount);
 
-        backstop::execute_draw(&e, &pool_address, amount, &to);
+        if Vault::total_assets(&e) < amount {
+            panic_with_error!(&e, BackstopError::InsufficientFunds);
+        }
+        token::Client::new(&e, &Vault::query_asset(&e)).transfer(
+            &e.current_contract_address(),
+            &to,
+            &amount,
+        );
 
         BackstopEvents::draw(&e, pool_address, to, amount);
     }
@@ -325,10 +348,57 @@ impl Backstop for BackstopContract {
         storage::extend_instance(&e);
         from.require_auth();
         pool_address.require_auth();
+        require_is_pool(&e, &pool_address);
+        require_nonnegative(&e, amount);
+        if from == pool_address || from == e.current_contract_address() {
+            panic_with_error!(&e, BackstopError::BadRequest);
+        }
 
-        backstop::execute_donate(&e, &from, &pool_address, amount);
+        let treasury = storage::get_treasury(&e);
+        let rate = TreasuryClient::new(&e, &treasury)
+            .get_rate()
+            .min(MAX_PROTOCOL_RATE);
+        let to_treasury = amount
+            .fixed_mul_floor(i128::from(rate), SCALAR_7)
+            .unwrap_optimized();
+        let to_backstop = amount - to_treasury;
+        let backstop_token = token::Client::new(&e, &Vault::query_asset(&e));
+        if to_treasury > 0 {
+            backstop_token.transfer(&from, &treasury, &to_treasury);
+        }
+        if to_backstop > 0 {
+            backstop_token.transfer(&from, &e.current_contract_address(), &to_backstop);
+        }
 
-        BackstopEvents::donate(&e, pool_address, from, amount);
+        BackstopEvents::donate(&e, pool_address, from, to_backstop);
+    }
+}
+
+/// The share token. Shares cannot be sent to the backstop itself: escrow is only entered
+/// through `queue_withdrawal`, so the queued share count cannot be inflated by a transfer.
+#[contractimpl(contracttrait)]
+impl FungibleToken for BackstopContract {
+    type ContractType = Vault;
+
+    fn decimals(e: &Env) -> u32 {
+        Vault::decimals(e)
+    }
+
+    fn transfer(e: &Env, from: Address, to: MuxedAddress, amount: i128) {
+        require_not_self(e, &to.address());
+        Vault::transfer(e, &from, &to, amount);
+    }
+
+    fn transfer_from(e: &Env, spender: Address, from: Address, to: Address, amount: i128) {
+        require_not_self(e, &to);
+        Vault::transfer_from(e, &spender, &from, &to, amount);
+    }
+}
+
+/// Call the backstop's hook after a deposit, if one is set
+fn call_hook(e: &Env, from: &Address, amount: i128, shares: i128) {
+    if let Some(hook) = storage::get_hook(e) {
+        BackstopHookClient::new(e, &hook).on_backstop_deposit(from, &amount, &shares);
     }
 }
 
@@ -339,8 +409,25 @@ impl Backstop for BackstopContract {
 ///
 /// ### Errors
 /// If the number is negative
-pub fn require_nonnegative(e: &Env, amount: i128) {
+fn require_nonnegative(e: &Env, amount: i128) {
     if amount.is_negative() {
         panic_with_error!(e, BackstopError::NegativeAmountError);
+    }
+}
+
+/// Require that `pool_address` is the pool this backstop serves
+///
+/// ### Errors
+/// If the address is any other pool
+fn require_is_pool(e: &Env, pool_address: &Address) {
+    if pool_address != &storage::get_pool(e) {
+        panic_with_error!(e, BackstopError::NotPool);
+    }
+}
+
+/// Require that an address is not the backstop
+fn require_not_self(e: &Env, address: &Address) {
+    if address == &e.current_contract_address() {
+        panic_with_error!(e, BackstopError::BadRequest);
     }
 }

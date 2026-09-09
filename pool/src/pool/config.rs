@@ -21,8 +21,9 @@ pub fn execute_initialize(
     bstop_rate: &u32,
     max_positions: &u32,
     min_collateral: &i128,
+    min_backstop: &i128,
     backstop_address: &Address,
-    blnd_id: &Address,
+    hook: &Option<Address>,
 ) {
     let pool_config = PoolConfig {
         oracle: oracle.clone(),
@@ -35,9 +36,13 @@ pub fn execute_initialize(
 
     storage::set_admin(e, admin);
     storage::set_name(e, name);
+    if *min_backstop < 0 {
+        panic_with_error!(e, PoolError::InvalidPoolConfigArgs);
+    }
     storage::set_backstop(e, backstop_address);
+    storage::set_min_backstop(e, *min_backstop);
+    storage::set_hook(e, hook);
     storage::set_pool_config(e, &pool_config);
-    storage::set_blnd_token(e, blnd_id);
 }
 
 /// Update the pool
@@ -216,6 +221,7 @@ fn require_valid_pool_config(e: &Env, config: &PoolConfig) {
 mod tests {
     use crate::storage::QueuedReserveInit;
     use crate::testutils;
+    use crate::testutils::PROTOCOL_VERSION;
 
     use super::*;
     use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
@@ -233,7 +239,7 @@ mod tests {
         let max_positions = 2;
         let min_collateral = 1_0000000;
         let backstop_address = Address::generate(&e);
-        let blnd_id = Address::generate(&e);
+        let hook = Address::generate(&e);
 
         e.as_contract(&pool, || {
             execute_initialize(
@@ -244,8 +250,9 @@ mod tests {
                 &bstop_rate,
                 &max_positions,
                 &min_collateral,
+                &1_000_0000000,
                 &backstop_address,
-                &blnd_id,
+                &Some(hook.clone()),
             );
 
             assert_eq!(storage::get_admin(&e), admin);
@@ -256,7 +263,8 @@ mod tests {
             assert_eq!(pool_config.max_positions, max_positions);
             assert_eq!(pool_config.status, 6);
             assert_eq!(storage::get_backstop(&e), backstop_address);
-            assert_eq!(storage::get_blnd_token(&e), blnd_id);
+            assert_eq!(storage::get_min_backstop(&e), 1_000_0000000);
+            assert_eq!(storage::get_hook(&e), Some(hook));
         });
     }
 
@@ -274,7 +282,7 @@ mod tests {
         let max_positions = 3;
         let min_collateral = 1_0000000;
         let backstop_address = Address::generate(&e);
-        let blnd_id = Address::generate(&e);
+        let hook = Address::generate(&e);
 
         e.as_contract(&pool, || {
             execute_initialize(
@@ -285,8 +293,9 @@ mod tests {
                 &bstop_rate,
                 &max_positions,
                 &min_collateral,
+                &1_000_0000000,
                 &backstop_address,
-                &blnd_id,
+                &Some(hook.clone()),
             );
         });
     }
@@ -305,7 +314,7 @@ mod tests {
         let max_positions = 1;
         let min_collateral = 1_0000000;
         let backstop_address = Address::generate(&e);
-        let blnd_id = Address::generate(&e);
+        let hook = Address::generate(&e);
 
         e.as_contract(&pool, || {
             execute_initialize(
@@ -316,8 +325,9 @@ mod tests {
                 &bstop_rate,
                 &max_positions,
                 &min_collateral,
+                &1_000_0000000,
                 &backstop_address,
-                &blnd_id,
+                &Some(hook.clone()),
             );
         });
     }
@@ -356,7 +366,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 12345,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 123456,
             network_id: Default::default(),
             base_reserve: 10,
@@ -394,7 +404,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 12345 * 5,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 123456,
             network_id: Default::default(),
             base_reserve: 10,
@@ -982,7 +992,7 @@ mod tests {
         e.mock_all_auths();
         e.ledger().set(LedgerInfo {
             timestamp: 500,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 100,
             network_id: Default::default(),
             base_reserve: 10,
@@ -1008,7 +1018,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 10000,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 100,
             network_id: Default::default(),
             base_reserve: 10,
@@ -1064,7 +1074,7 @@ mod tests {
         e.mock_all_auths();
         e.ledger().set(LedgerInfo {
             timestamp: 500,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 100,
             network_id: Default::default(),
             base_reserve: 10,
@@ -1086,7 +1096,7 @@ mod tests {
 
         e.ledger().set(LedgerInfo {
             timestamp: 10000,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 100,
             network_id: Default::default(),
             base_reserve: 10,
@@ -1142,7 +1152,7 @@ mod tests {
         e.mock_all_auths();
         e.ledger().set(LedgerInfo {
             timestamp: 500,
-            protocol_version: 22,
+            protocol_version: PROTOCOL_VERSION,
             sequence_number: 100,
             network_id: Default::default(),
             base_reserve: 10,
