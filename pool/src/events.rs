@@ -1,4 +1,4 @@
-use soroban_sdk::{Address, Env, Symbol, Vec};
+use soroban_sdk::{Address, Env, Symbol};
 
 use crate::{AuctionData, ReserveConfig};
 
@@ -102,47 +102,6 @@ impl PoolEvents {
     pub fn set_status_admin(e: &Env, admin: Address, pool_status: u32) {
         let topics = (Symbol::new(&e, "set_status"), admin);
         e.events().publish(topics, pool_status);
-    }
-
-    /// Emitted when reserve emissions are updated
-    ///
-    /// - topics - `["reserve_emission_update"]`
-    /// - data - `[res_token_id: u32, eps: u64, expiration: u64]`
-    ///
-    /// ### Arguments
-    /// * res_token_id - The reserve token ID
-    /// * eps - The new emissions per second
-    /// * expiration - The new expiration time
-    pub fn reserve_emission_update(e: &Env, res_token_id: u32, eps: u64, expiration: u64) {
-        let topics = (Symbol::new(e, "reserve_emission_update"),);
-        e.events().publish(topics, (res_token_id, eps, expiration));
-    }
-
-    /// Emitted when emissions are gulped
-    ///
-    /// - topics - `["gulp_emissions"]`
-    /// - data - `emissions: i128`
-    ///
-    /// ### Arguments
-    /// * emissions - The amount of emissions gulped
-    pub fn gulp_emissions(e: &Env, emissions: i128) {
-        let topics = (Symbol::new(&e, "gulp_emissions"),);
-        e.events().publish(topics, emissions);
-    }
-
-    /// Emitted when emissions are claimed
-    ///
-    /// - topics - `["claim", from: Address]`
-    /// - data - `[reserve_token_ids: Vec<u32>, amount_claimed: i128]`
-    ///
-    /// ### Arguments
-    /// * from - The address claiming the emissions
-    /// * reserve_token_ids - The reserve token IDs claimed
-    /// * amount_claimed - The amount claimed
-    pub fn claim(e: &Env, from: Address, reserve_token_ids: Vec<u32>, amount_claimed: i128) {
-        let topics = (Symbol::new(&e, "claim"), from);
-        e.events()
-            .publish(topics, (reserve_token_ids, amount_claimed));
     }
 
     /// Emitted when bad debt is recorded
